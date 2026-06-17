@@ -27,10 +27,12 @@ The three blocks form a **loop**: Block 3 feedback (a decline, a staging FTBFS, 
 Call these instead of hand-writing the osc-API / Repology incantations every time (they encode the exact queries that are easy to get subtly wrong — the `role='maintainer'` person match, the `roles=creator` request search, the Repology pagination + `srcname` intersection):
 
 - `my-packages.sh [--project P] [--user U]` — packages where you are an **explicit package-level** maintainer (not project-inherited).
-- `my-requests.sh [--state open|declined|all] [--user U]` — your submit requests, grouped/filtered by state.
+- `my-requests.sh [--state open|declined|all] [--user U]` — your submit requests, grouped/filtered by state (plain list).
+- `sr-status.py [--state open|declined|all] [--limit N] [ID …]` — **pretty status table**: overall state, the full review chain (licensedigger / factory-auto / factory-staging / staging-project / opensuse-review-team, each badged), and human comments. The Block-3 watch view.
 - `outdated.py [--names FILE]` — Repology "outdated in openSUSE Tumbleweed" ∩ your package set.
 - `devel-of.sh <pkg> [target-project]` — the devel project registered for a package (`404` = not in the target / new package).
 - `gpg-verify.sh <tarball> <keyring>` — verify a signed source tarball against a package keyring (handles the ASCII-armored-keyring trap).
+- `build-summary.sh [repo-arch]` — the last `osc build`'s result, `%check`/ctest pass count, rpmlint badness summary + every E:/W: line, and the produced RPMs, in one `sudo`-wrapped invocation (the build log is root-owned).
 
 Each script prints usage with `--help` and defaults the OBS account to `osc whois` unless `--user` is given.
 
