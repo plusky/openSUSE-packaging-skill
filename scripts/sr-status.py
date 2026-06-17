@@ -29,11 +29,21 @@ def is_bot(who):
     w = (who or "").lower()
     return any(b in w for b in BOTS) or "bot" in w or w.startswith("_")
 
-def review_label(rv):
+def review_label(rv):  # short, for the compact table column
     for k in ("by_user", "by_group", "by_project"):
         v = rv.get(k)
         if v:
             return SHORT.get(v, v.split(":")[-1] if k == "by_project" else v)
+    return "?"
+
+def review_full(rv):   # full name, for the bulleted blocks format
+    for k in ("by_user", "by_group"):
+        v = rv.get(k)
+        if v:
+            return v
+    v = rv.get("by_project")
+    if v:
+        return "staging " + (v.split("Staging:")[1] if "Staging:" in v else v.split(":")[-1])
     return "?"
 
 def clip(s, n=64):
@@ -66,6 +76,8 @@ def main():
     ap.add_argument("--target")
     ap.add_argument("--limit", type=int, default=40,
                     help="cap discovered SRs (most recent first); each costs 2 API calls")
+    ap.add_argument("--format", choices=["table", "blocks"], default="table",
+                    help="table = one cramped row per SR; blocks = per-SR with the review chain as bullets")
     a = ap.parse_args()
     user = a.user or subprocess.run(["osc", "whois"], capture_output=True, text=True).stdout.split(":")[0].strip()
 
@@ -80,9 +92,6 @@ def main():
         if a.limit and len(ids) > a.limit:
             ids = sorted(ids, key=int, reverse=True)[: a.limit]
 
-    print(f"### Submit requests for `{user}` — {len(ids)} shown\n")
-    print("| SR | Package | State | Review chain | Human comment |")
-    print("|----|---------|-------|--------------|---------------|")
     rows = []
     for rid in ids:
         req = ET.fromstring(api(f"/request/{rid}") or "<request/>")
@@ -92,12 +101,24 @@ def main():
         tgt = act.find("target") if act is not None else None
         pkg = tgt.get("package") if tgt is not None else "?"
         target = tgt.get("project") if tgt is not None else "?"
-        chain = " ".join(f"{review_label(rv)}{badge(rv.get('state',''))}" for rv in req.findall("review"))
-        rows.append((rid, pkg, f"{badge(sname)} {sname}", chain or "—",
-                     human_comment(rid, st), target, sname))
-    # declines first, then by id
-    for rid, pkg, state, chain, comment, target, sname in sorted(rows, key=lambda r: (r[6] != "declined", r[0])):
-        print(f"| {rid} | {pkg} | {state} | {chain} | {comment} |")
+        rows.append((rid, pkg, sname, req.findall("review"), human_comment(rid, st), target))
+    rows.sort(key=lambda r: (r[2] != "declined", r[0]))  # declines first, then by id
+
+    print(f"### Submit requests for `{user}` — {len(rows)} shown\n")
+    if a.format == "blocks":
+        for rid, pkg, sname, reviews, comment, target in rows:
+            print(f"**{rid} — {pkg}**  {badge(sname)} {sname}  ·  → `{target}`")
+            for rv in reviews:
+                print(f"- {review_full(rv)} {badge(rv.get('state',''))}")
+            if comment and comment != "—":
+                print(f"- {comment}")
+            print()
+    else:
+        print("| SR | Package | State | Review chain | Human comment |")
+        print("|----|---------|-------|--------------|---------------|")
+        for rid, pkg, sname, reviews, comment, target in rows:
+            chain = " ".join(f"{review_label(rv)}{badge(rv.get('state',''))}" for rv in reviews) or "—"
+            print(f"| {rid} | {pkg} | {badge(sname)} {sname} | {chain} | {comment} |")
     print("\n_Legend: ✅ accepted · 🔎 review · ⏳ new/pending · ❌ declined · 🚫 revoked · ♻️ superseded_")
 
 if __name__ == "__main__":
