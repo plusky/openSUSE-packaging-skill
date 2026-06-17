@@ -1,0 +1,265 @@
+# Block 3 — Submit to Factory and watch
+
+## Committing changes to OBS
+
+OBS treats commit and push as a single operation: `osc commit` (alias `osc ci`) sends the change to api.opensuse.org and triggers a server-side rebuild. There is no separate push step. Once `osc commit` returns "Committed revision N", the change is live and irreversible — revisions are immutable, you cannot amend or rewrite them.
+
+> **HARD RULE — always show the full diff before committing.** Before running `osc commit`/`osc ci` **or any commit-equivalent** (`git commit`/`git push` in a git checkout; an `osc api -X DELETE …/_link`, which is itself a commit; `osc copypac`; `osc service` runs that will be committed), **display the full diff to the user** (`osc diff`, or `git diff`/`git diff --cached`) and let them see it — *every time*, even when they've already said "commit". Show the diff in the same turn, then commit. This is the last review gate before a public, immutable revision; never commit without surfacing the diff first.
+
+Workflow (run after a successful local build and a `.changes` entry):
+
+1. `osc status` — list modified / added / deleted files. Anything not yet staged shows up with `M`/`A`/`D`/`?`.
+2. `osc diff` — preview the *full* diff that will be sent. Always read this before committing; it is the last chance to catch a mistake before the change becomes public.
+3. `osc add <newfile>` for any new files (sources, patches) that show as `?` in `osc status`.
+4. `osc service runall source_validator` — run the source-validation service locally before commit. OBS runs this server-side on every commit anyway, but doing it locally catches the same class of issues (sources referenced in the spec but missing from the package dir, unused source files, unparseable spec, bad license tag, a stray trailing `----` separator or malformed date in `.changes` → `'' is not a date`) before they end up in OBS history. **Treat any reported error as a hard blocker** (warnings case-by-case). **Operational rule: only commit on green — chain the gates with `&&`, never `;`, and never pipe the validator before the `&&`.** Writing `osc service runall source_validator ; osc commit` commits *even when the validator failed*. Subtler trap: `osc service runall source_validator | tail -2 && osc commit` **also** commits on failure — a pipeline's exit status is the *last* command's (`tail`, always 0), so it masks the validator's failure. Run the validator **unpiped** and check its real `rc` (`osc service runall source_validator >/tmp/sv.log 2>&1; rc=$?`), or `set -o pipefail`, then `&& osc commit -m "..."`. (Real miss: committed ossim rev 25 with a validator failure because `| tail -2` swallowed `rc=1`.) Likewise only commit when the local `osc build` (incl. `%check`) passed — a failing build/validator must abort the commit, not proceed past it.
+5. **Run `osc updatepacmetafromspec` by default as part of cleanup** to sync `URL:`/`%description`/title into the OBS package `_meta`. The spec is not authoritative for the OBS package metadata — `_meta` carries its own copy of the URL and description that's shown on build.opensuse.org, used by web searches, and consumed by tooling. Without this step the spec and `_meta` drift and the project page keeps showing the old URL/description forever. The command is interactive (prints a diff and asks `y)yes / n)no / e)edit Write?`); pipe `echo y |` to confirm non-interactively after reviewing the diff. Run this **before** `osc commit` so any metadata update lands together with the source change. **Do it on every cleanup, not only when you changed `URL:`/`%description`** — the `_meta` frequently drifts or is missing these fields entirely (real case: `Archiving:Backup/vorta`'s `_meta` had no title/description/url at all until synced). If the `_meta` already matches, the command simply produces no diff and is harmless.
+6. `osc commit -m "<short message>"` — sends the changes. The `-m` message becomes the OBS revision message (visible in `osc log`); it is **separate** from the `.changes` file bullets. Keep it to one line summarising the `.changes` entry — do not paste the whole `.changes` block in.
+7. After commit, `osc status` should return empty. Confirm the new revision with `osc log | head -10`.
+
+Treat `osc commit` the same way as a `git push` to a shared remote — confirm intent before running, and never run it speculatively. Server-side rebuilds are scheduled automatically across all enabled repos and architectures; watch with `osc results` (see next section). Do not assume the local build matches what the server will produce — repository state, build constraints, and macros can differ.
+
+**Broken link because the link target was removed upstream.** A devel package can be a `<link project="openSUSE:Factory" .../>` (often a branch link with `<patches><branch/></patches>`). If Factory later *removes* that package, the link breaks: checkout warns `the link … is currently broken … use 'osc pull'`, and the file list carries `linkinfo … error="openSUSE:Factory/<pkg>: package 'X' does not exist"`. **`osc pull` cannot fix this** — it merges a link against its base, and the base is gone (`osc pull` just re-errors with the 404). When the package already carries its own real sources (spec/tarball/patches are real `<entry>`s, not inherited), the fix is to **drop the `_link`**, turning it into a standalone package:
+```
+osc api -X DELETE '/source/<prj>/<pkg>/_link?comment=drop+broken+link+(target+removed+from+Factory)'
+```
+This `DELETE` *is itself a commit* (creates a new server revision immediately — confirm intent first, same as `osc commit`); afterwards `osc up` to sync the local checkout, and `osc st` will be clean. No `.changes` entry needed — it's pure OBS metadata, recorded in `osc log`. The alternative (re-pointing the link elsewhere) only makes sense if a valid new target exists; when Factory simply dropped the package, standalone is correct.
+
+## Monitoring server-side builds (`osc results`, `osc rbl`)
+
+After committing, OBS reschedules every enabled `<repo, arch>` target. `osc results` watches the matrix and `osc rbl` (a.k.a. `osc buildlog`) inspects individual logs — **but reaching for them is opt-in, not a default.** Per the "investigate locally" HARD RULE above: don't poll the server on your own initiative after a commit/SR, and don't query a remote log for something already sitting in `/var/tmp/build-root/.../.build.log` on your disk. Use these tools only when the user asks, or for the narrow cases that genuinely require the server (arch-specific failures you can't build locally, an OBS-only failure, triaging a pasted URL). The commands below document *how* to use them when one of those reasons applies.
+
+### `osc results` status vocabulary
+
+`osc results` shows one line per `<repo, arch>` with a status word. The plain form abbreviates; pass `--verbose` for the full state.
+
+| Plain | `--verbose` form | Meaning |
+|---|---|---|
+| `succeeded` | `succeeded` | Build OK, package published to the repo. |
+| `succeeded*` | `succeeded(unpublished)` | Build OK, but the binary is *not* published — could be project policy (NonFree-style projects often hold a subset of arches back), publish queue lag, or download_on_demand. Not a failure; just means consumers won't see it via zypper. |
+| `finished` | `finished: succeeded` / `finished: failed` | Build run completed; check the verbose form to know which. `finished:` alone is not a status — always confirm with `--verbose` before trusting it. |
+| `building` | `building: building on <worker>:<slot>` | Still running. Verbose form names the worker — useful when a build is mysteriously slow or stuck. |
+| `scheduled` | `scheduled` | Waiting for a worker. |
+| `blocked` | `blocked: needed by <X>` | Waiting on another package in the dependency graph. |
+| `disabled` | `disabled` | Project / package config disables this `<repo, arch>` deliberately. Don't try to "fix" by enabling without checking `_meta`. |
+| `excluded` | `excluded` | Spec's `ExcludeArch:` / `ExclusiveArch:` excludes this arch. |
+| `unresolvable` | `unresolvable: nothing provides <X>` | BuildRequires couldn't be satisfied — usually a missing repo dep, not a build error. |
+| `failed` | `failed` | Build actually broke. Read the log with `osc rbl`. |
+| `broken` | `broken: <reason>` | The package metadata is broken (bad spec, missing source). |
+
+Rule of thumb: only `failed`, `unresolvable`, and `broken` are real problems. `succeeded*` and `finished` look alarming but usually aren't — always run `osc results --verbose` before reporting a failure, and prefer the verbose form when communicating status back to the user.
+
+### `osc rbl` — remote build log
+
+`osc rbl <repo> <arch>` (when invoked inside a package checkout) streams the build log for that target. Aliases / siblings:
+
+- `osc buildlog` — full name (same thing).
+- `osc blt` / `osc buildlogtail` — only the tail. Use this first when triaging a failure; it's cheap and the failure reason is almost always near the end.
+- From outside a checkout: `osc rbl <project> <package> <repo> <arch>` — the full four-arg form.
+- Or `osc rbl <buildlog-URL>` — pasted-URL form, useful for pointing at someone else's failed build from a chat link.
+
+Useful flags:
+
+- `-s` / `--strip-time` — drops the `[ Ns]` elapsed-time prefix from each line. Use it when reading the log as a human — the timestamps add noise. Keep them when comparing build performance across arches or chasing timing-sensitive failures.
+- `-l` / `--last` — show the last *finished* log (succeeded or failed); useful when the current state is "building".
+- `--lastsucceeded` — show the last *succeeded* log specifically; perfect for diffing against the current failure when a previously-working build breaks.
+- `-o OFFSET` — start reading from a byte offset. The log can be megabytes for big packages; use this with `-o $((SIZE-50000))` (or just `osc blt`) to skip to the end.
+- `-M FLAVOR` — for multibuild packages, picks the flavor (the `<package>:<flavor>` form).
+
+Triage workflow for a remote-build failure:
+
+1. `osc results --verbose` — identify which `<repo, arch>` actually failed (vs `succeeded*` noise).
+2. `osc blt <repo> <arch>` — read the tail. RPM errors, rpmlint errors, and `%check` failures land in the last few hundred lines.
+3. If the failure is build-step specific (compile error, missing dep), `osc rbl -s <repo> <arch> | grep -iE "error:|undefined|cannot find"`.
+4. If it's a regression, `osc rbl --lastsucceeded <repo> <arch>` and diff against the current to see what changed in the environment.
+5. Real failures should usually be reproduced locally with `osc build <repo> <arch>` before pushing a fix — the build root from the local run gives you a debugger-friendly environment (binaries left in `/var/tmp/build-root/...`, see Local builds).
+
+### Release tag rewriting
+
+The `Release: 0` you set in the spec is **not** what shows up in the built RPM name. OBS appends a project-specific suffix during build: `<name>-<version>-<project>.<release-counter>.<rebuild-counter>.<arch>.rpm`. E.g. `stream-5.10-0.aarch64.rpm` locally becomes `stream-5.10-benchmark.8.1.aarch64.rpm` on the server. This is why the "always `Release: 0`" rule works — the server generates the real number and rebases it each commit. Don't try to set the release counter manually.
+
+## Submit requests (`osc sr`, `osc rq`)
+
+A commit to a devel project (e.g. `benchmark/stream`) is **not** the same as a submission to an upstream distribution (e.g. `openSUSE:Factory`). They are two separate steps:
+
+1. `osc commit` — writes a new revision in the devel project. OBS rebuilds it across that project's repos. Nothing automatic happens beyond that.
+2. `osc sr <target-project>` (alias `osc submitrequest`) — files a submit request (SR) asking maintainers of `<target-project>` to copy your latest revision in. This is the step that propagates a change upstream.
+
+**This is a real gotcha.** `osc commit` returning "Committed revision N" does *not* mean the change is on its way to Factory; it only means the devel project has it. If a downstream/user reports that a fix you just committed isn't visible, the cause is almost always a missing `osc sr`.
+
+Conversely, an SR may show up in `osc rq list` for a project that you didn't manually create — collaborators can run `osc sr` against the same package between your commit and your next check, or origin-manager / staging bots may file follow-on requests. Don't be surprised by an SR that "appeared" minutes after your commit; check `Created by:` to see who issued it.
+
+### Picking the right target project
+
+The submit target depends on the package's license and category:
+
+- **OSI-approved SPDX license** → `openSUSE:Factory` (the default).
+- **Non-SPDX, restricted-redistribution, or NonFree-marker license** (`License: NonFree`, custom benchmark licenses, fonts under non-redistributable terms, etc.) → **`openSUSE:Factory:NonFree`**. Submitting a NonFree-licensed package to plain `openSUSE:Factory` will be declined by `licensedigger`; pick the NonFree target up front.
+- **SLE Updates / backports under `SUSE:SLE-*`** → **IBS only.** These targets are on `build.suse.de`; you cannot submit there from an OBS checkout. The workflow has to be re-run with `osc -A https://api.suse.de`. Do not propose these as targets from an OBS context (see "OBS vs IBS" at the top).
+- **Maintenance updates for an already-released package** → `osc mr` (maintenance request) rather than `osc sr`.
+
+### Submitting a brand-new package — go via the devel project, not straight to Factory
+
+**When adding a NEW package, the destination depends on whether you are a *project-level* maintainer of its devel project.** For a package whose natural devel project you do **not** project-maintain (the common case — e.g. a new Python module belongs in `devel:languages:python`, a new library in `devel:libraries:c_c++`), the workflow is **two SRs in sequence**, not a direct submission to Factory:
+
+1. **Stage the sources in your home project.** You can't create the package directly in a devel project you only hold *package-level* (not project-level) maintainership in — `osc meta pkg <devel-project> <newpkg>` returns **`403 Forbidden: You are not authorized to update this project`**. So create it in `home:<you>` instead (`osc meta pkg home:<you> <newpkg> -F meta.xml`, then `osc co`, add the spec/`.changes`/sources, build, commit).
+2. **`osc sr home:<you>/<newpkg> <devel-project>`** — submit the new package *to the devel project first*, so it gets **maintained there**. (Expect the `Warning: failed to fetch meta data … (new package?)` — normal for a new package.) The devel-project maintainers review/build/accept it.
+3. **Only after it's accepted into the devel project**, submit from there to Factory: **`osc sr <devel-project>/<newpkg> openSUSE:Factory`** (a new-package submission — stricter `opensuse-review-team` legal/review pass).
+
+Do **not** short-circuit by submitting `home:<you> → openSUSE:Factory` directly for a package that has an established devel project you don't project-own; the package should live in (and be maintained from) the proper devel project. (Real case: `python-siphash24` — staged in `home:<your-obs-account>`, SR'd to `devel:languages:python` first; the maintainer only held package-level rights there, so direct creation 403'd.) If you genuinely *are* the project-level maintainer of the target devel project, you can create + commit there directly and skip the home-project hop.
+
+**A version bump can introduce a NEW mandatory dependency that isn't in Factory yet — that blocks the update until the dep is packaged.** Before committing to an update, re-read the upstream dependency manifest (Python `pyproject.toml` `dependencies`/`requires-python`, `Cargo.toml`, CMake `find_package`, etc.) and check each *new* hard dependency exists in Factory (`osc develproject openSUSE:Factory <dep>` → 404 = absent; a `home:*:branches:*` hit is **not** "in Factory"). If a new mandatory dep is missing, the update is a **sequential/coordinated submission**: package the dependency into Factory first (via its devel project, per above), then submit the consumer once the dep lands. (Real case: `python-pytools` 2026.1.1 newly hard-required `siphash24>=1.6`, absent from Factory → had to package `python-siphash24` first; the pytools update parked until then.)
+
+### Verifying the target has the package
+
+Before `osc sr <target>`, confirm the target actually has the package — Factory routinely removes packages, and an SR to a removed target gets declined ("The package 'openSUSE:Factory/foo' has been removed"). Do **not** use `osc list <target> | grep <pkg>` for this — it downloads the whole project package list to answer a yes/no question. Two lighter options:
+
+- **`osc develproject <target> <pkg>`** — returns the devel project registered for that package in `<target>`. 404 means the package isn't in the target. Best choice for the pre-SR check because it also confirms which project the target expects SRs *from* (e.g. `openSUSE:Factory/tesseract-ocr` → `Publishing/tesseract-ocr` — your local checkout is the canonical sender). One round trip, one fact you actually needed.
+- **`osc cat <target> <pkg> _link`** — for packages set up as a link from one project to another (devel-project branches, maintenance branches), shows the link XML. 404 means no `_link` (the project holds real sources). Use this when chasing project-to-project link relationships, not for the basic existence check.
+
+### Querying existing requests
+
+| Command | What it shows |
+|---|---|
+| `osc rq list <project>` (alias `osc request list`) | Open requests **involving** that project — both directions (source or target). |
+| `osc rq list -P <project>` | Same, but the `-P` flag is explicit. Useful when the project name could be confused with a state keyword. |
+| `osc rq list <project> <package>` | Open requests against that specific package. |
+| `osc rq list -s 'new,review,declined,accepted,revoked'` | Filter by state. Defaults to open states only — add `accepted,revoked` to see historical SRs. |
+| `osc rq show <NN>` | Full detail of one SR: source, target, message, every review's state, and the history log. |
+| `osc rq list -U <user>` | Requests **involving** a user — **not** creator-only (see below). |
+| `osc rq list -M` | Requests you have to act on (you are a reviewer or owner). |
+
+`-P` returns **both** directions. Read the `submit: A/x -> B` line to interpret each entry: if the project of interest is on the left, the SR is *outgoing*; on the right, *incoming*. Maintenance-incident lines (`maintenance_incident: …`) follow the same convention.
+
+**`osc rq list -U <user>` is not a creator filter.** It returns every request the user is *involved* in — including ones where they are only a reviewer or a maintainer of the target package (the `Created by:` line in the output will frequently be someone else). There is **no creator-only flag** in `osc rq list`. To get the requests a user actually *authored*, query the request-search API with `roles=creator`:
+
+```
+# declined submit requests created by <user> targeting Factory:
+osc api '/request?view=collection&states=declined&roles=creator&user=<user>&types=submit&project=openSUSE:Factory'
+```
+
+The result is a `<collection>` of `<request>` elements — parse `@id`, `state/@who`, `state/@when`, and `action/source` + `action/target` for each. Adjust `states=` (comma-separated), drop `project=` for all targets, or change `roles=` (`creator`, `reviewer`, `maintainer`, `source`, `target`) as needed. `osc whois` prints your own OBS username for the `user=` value.
+
+### Triaging your declined submit requests
+
+A recurring task is "which of my submissions are declined and need attention?" Workflow:
+
+1. **List them** with the `roles=creator` API above (`states=declined`), reading each `state/@who` (decliner) and the decline comment. Group by decline reason:
+2. **Bookkeeping declines (quick fixes)** — `factory-auto`/reviewer rejected on a fixable spec/source issue:
+   - *Orphaned source* (`… is not mentioned in spec files as source or patch`): declare the file as `Source`/`Patch`, or `osc rm` it if obsolete (verify which — see Patches section; e.g. an unreferenced `.desktop` used only via `%suse_update_desktop_file -i`).
+   - *Patch deleted without changelog note*: add the `.changes` bullet for the removal.
+   - *License typo* (`invalid-license` / a wrong SPDX token): fix the `License:` tag.
+   - *"missing details on why we update"* (human reviewer): write a proper, curated `.changes` entry.
+   - Fix → local build → `osc diff` → `source_validator && osc commit` → resubmit (`osc sr <devel>/<pkg> openSUSE:Factory --supersede <declined-id>`).
+3. **"The package '…' has been removed"** — the target is gone from Factory; a plain resubmit just re-declines. This is now a **new-package submission**: update + cleanup + make it build cleanly (these are often packages dropped *for* a CMake-4/GCC-15 FTBFS — fix that), then `osc sr … --supersede <declined-id>` (expect the `(new package?)` warning + stricter `opensuse-review-team` review). Or `osc rq revoke` if you don't want to re-add it.
+4. **Stale/obsolete declines** — if the devel-project sources now match Factory (`osc rdiff openSUSE:Factory <pkg> <devel-project> <pkg>` is empty), the decline is moot → `osc rq revoke <id>` to tidy (revoke works on `declined`; see state vocabulary).
+
+### What human Factory reviewers decline for (mined from ~600 human-declined Factory SRs)
+
+Analysing the **593 human declines** within the most recent 1000 declined Factory submits (2023-10 → 2026-06; excluding the automated `factory-auto`/`staging-bot` declines) shows the recurring, *submitter-controllable* reasons. By volume the largest classes are *coordination*, not spec defects — **superseded by a newer SR** (~19%), **package removed from Factory** (~14%), **FTBFS in the devel project** (~12%) — followed by a long tail of concrete spec/source issues below. Pre-empt these **before** filing the SR:
+
+- **By far the #1 controllable decline: the package is red in the *devel project itself* — on an arch or flavor you didn't build locally.** Reviewers routinely decline with terse `fails to build in devel project` / `fails to build on i586 in devel project` / `<pkg>:test fails to build from source in devel project`. They will **not** check in something the devel project is already failing. So a clean build *on your one native arch* is necessary but **not sufficient** for an SR to Factory: before `osc sr`, confirm the devel package is **green on every arch it enables (notably `i586`, which an aarch64 host can't build locally) and every multibuild/`:test` flavor**. Check `osc results <devel-project> <pkg>` (or the `br.opensuse.org` dashboard) and only submit once all arches/flavors are `succeeded`. (This *refines* the "don't poll remote builds before an SR" guidance — for a **classic osc devel project** you must still confirm it isn't already red; the no-poll shortcut is for **git/PR-tracked** packages where the autogits bot already gated the build. A red `i586` or `:test` you ignored is the single most common way to get a human decline.) Corollary: if the package genuinely should build an arch the devel project doesn't enable, the reviewer may ask you to *add* that arch to the devel project first (real case: `cmake:full FBTFS on i586, please include this arch in the devel project`).
+- **`sle_version` / `sles_version` macro traps (recurring — uwsgi, warzone2100, himmelblau).** `sles_version` is **not defined on 15.x**; `sle_version` is **not defined on SLE 16 / Leap 16**. A guard like `%if 0%{?sle_version} …` silently doesn't fire there, so the intended branch is skipped. Use **`%if 0%{?suse_version} >= 1600`** to target "16.0 and everything newer (SLE 16, Leap 16, future products, Tumbleweed)". Mind the boundary operator too: `%{?suse_version} > 1600` *also* matches 16.1 (1610) — if you mean "16.0 only" you need an explicit upper bound, and `>= 1600` is the right form for "16.0 onwards". (Pairs with the existing "Leap 15.6 EOL — drop `< 1600` constructs" rule.)
+- **Static `.a` libraries (kokkos, quickjs → Static_library_packaging_policy).** Don't ship `.a` files in the main or `-devel` package. Either move them into a dedicated **`-devel-static`** subpackage (only if they're genuinely needed) or **delete them**. Reviewer: *".a files belong into a devel-static [subpackage] if they are really needed; if not please delete them."*
+- **Don't submit pre-release versions to Factory** (suseconnect-ng: *"a release candidate version was propagated to factory submission too soon"*). And keep version strings clean: **strip a leading `v`** from the upstream tag, and remember `~rc1` etc. sort *older* than the release (`zypper vcmp 2.27.0~rc1 2.27.0` → older), which is what you want for a real release but a footgun if you accidentally ship the rc. **Don't hand-maintain `Release:`** — leave `Release: 0`; OBS manages it (nekobox: *"we do not maintain the release number in the spec file"*).
+- **`.changes` discipline that humans (not just the bot) enforce:** *"you are overwriting the changes entry and not appending to the file"*, *"duplicated in the changes"*, *".changes files are not strictly incremental — please merge"*, *"missing changes entry"*, *"missing actual change"* / *"spec file not updated"* (a changelog claiming a change with no matching spec edit). Always **prepend** a new entry, never rewrite/overwrite existing ones; no duplicate bullets; and the spec must actually contain the change the entry describes. (Reinforces the "one entry per session, never edit accepted entries" rules above.)
+- **Changelog too terse** (vym, primecount, grub2, …): *"Please be a bit more verbose in the changes entry (not just version number)."* A bare `- Update to X.Y` gets declined by humans, not only flagged by tooling — curate real per-release highlights (see the changelog-verbosity rules).
+- **`Obsoletes`/`Conflicts` hygiene** (dbus-1): *"Do not use unversioned obsoletes"* (always `Obsoletes: foo < %{version}-%{release}`), and *"Obsoletes and Conflicts against the same name makes no sense."* Shared-lib **file conflicts** from a soname bump where the old versioned subpackage isn't obsoleted also get declined (libmodbuspp, limesuite: `found conflict of libX1-… with libX1_0-… /usr/lib64/libX.so.*`) — see the baselibs/soname rules.
+- **Patch *provision* must be unconditional** (plymouth): *"Provision of patches must happen unconditionally. Application in `%prep` can be conditional"* — i.e. always list `PatchN:`/`SourceN:` at the top unconditionally; only the `%patch -P N …` line may sit inside an `%if`. (Complements the "prefer unconditional patch application" rule — the point here is specifically that the `Patch:` *declaration* is never guarded.)
+- **One source mechanism, not two** (scc, rustup): *"please pick .obscpio or tarball, we don't need both"* / *"we do not need both archives"* — don't commit both a `_service`-generated `.obscpio` and a plain tarball for the same source.
+
+The larger sample adds several more concrete, controllable classes:
+
+- **File-mode / file-conflict issues on shared paths** (Regina-REXX, himmelblau, devscripts). Two packages installing the *same* path with **different modes** conflict at install time: `found conflict of A with B /etc/alternatives/rexx [mode mismatch: -644 … vs -755 …]`. And an executable shipped **non-executable** gets flagged directly: *"/usr/bin/checkbashisms is installed with mode 644 — i.e. not executable"*. Ensure binaries are `0755` (`%attr(0755,root,root)` if the build installs them wrong) and that any path co-owned with another package (alternatives slaves, shared config) uses a consistent mode.
+- **Don't submit a version *downgrade*** (rubygem-mini_magick: *"the version downgrade doesn't look right"*). If your `Version:` is lower than what's already in Factory, the SR is declined unless the downgrade is intentional **and** explained in the `.changes`.
+- **Spec scripting (a `sed`, a `%build` tweak) can silently inject a wrong dependency** (mc: *"that sed call adds a python 2 dependency"*). After any in-spec source munging, re-check the generated `Requires` (`rpm -qp --requires` on the built RPM) — a stray shebang rewrite or config edit can pull an unwanted runtime dep.
+- **Switching to a *bundled/internal* copy of a library needs justification** (paraview: *"please explain why you switch to internal gl2ps"*). System libraries are strongly preferred; if you flip a `-DUSE_SYSTEM_X=OFF` / enable a bundled copy, the reviewer expects a `.changes` rationale (and it's usually the wrong move — prefer the system lib).
+- **Don't call `strip` (or other binary-mangling) by hand in `%install`** (cyrus-sasl: a bare `/usr/bin/strip` with no file argument dumped its usage and broke the build). rpm strips binaries and produces `-debuginfo` automatically; a manual `strip` is both redundant and a footgun. Likewise `Invalid supplement` (tsctp) — keep `Supplements:`/`Recommends:` expressions valid.
+- **`v`-prefix and pre-release version hygiene, the automatable way** (tuned): strip a leading `v` and avoid shipping an `~rc`/beta to Factory. The reviewer's own tip: do it in `_service` with `<param name="versionrewrite-pattern">v(.*)</param>` (+ `versionrewrite-replacement`) rather than hand-editing, so the next bump stays clean.
+- **Coordinated/atomic submissions** (cacti-spine ↔ cacti, fwupd-efi ↔ `gnu-efi >= 3.0.18`, boost-defaults ↔ boost 1.87, perl-IO-Socket-SSL ↔ spamassassin). When your change requires a *paired* update to another package (a consumer that would FTBFS, or a provider whose new version you need), submit them **together** (a staging project groups them) — submitting one alone gets it declined with "needs to be submitted with …". This is the actionable half of the "breaks reverse-dep" / "unresolvable dep" classes: fix/submit the other side in tandem rather than alone.
+
+The remaining large classes are mostly *coordination*, not spec defects, and aren't pre-emptable by a cleaner spec — but recognise them so you don't waste time "fixing" the package: **superseded by a newer SR** (`sr#NNNN has newer source and is from the same project`), **package removed from Factory** (handle as a new-package submission — see Triaging above), **unresolvable/missing dep in Factory** (a dependency isn't in Factory yet — submit the dep first or wait), and **"breaks <other package>"** (your update FTBFS's a reverse-dependency; the reviewer expects the rdep fixed/submitted in tandem).
+
+### SR state vocabulary
+
+- `new` — created, waiting for first review or staging pickup.
+- `review` — at least one review is `accepted` and the workflow is progressing; one or more reviews remain `new`.
+- `accepted` — all reviews passed; the SR's payload has been applied to the target.
+- `declined` — a reviewer rejected it. The decliner's name and reason are in the comment. It won't proceed on its own, but it is **not immutable**: the creator can still `osc rq revoke <id>` it (transitions `declined`→`revoked`, confirmed working) or `--supersede` it with a fresh SR. Revoking obsolete declined requests is good hygiene — e.g. clean up your old declines whose devel-project sources now match Factory: `osc rdiff openSUSE:Factory <pkg> <devel-project> <pkg>` with empty output means identical, so the decline is moot and can be revoked. (A package that errors on rdiff has been removed from Factory; leave those.)
+- `revoked` — the SR author (or someone with author permissions) cancelled it before resolution. Not the same as `declined`.
+- `superseded` — replaced by a newer SR.
+
+### Typical Factory review chain
+
+A submit request to Factory or Factory:NonFree typically picks up these reviews in order. Each must finish `accepted` for the SR to merge:
+
+1. **`factory-auto` (User review)** — automated check script (spec sanity, no obvious blockers). Usually completes within seconds.
+2. **`licensedigger` (User review)** — license SPDX validation. Flags wrong/missing `License:` tags and missing license files.
+3. **`factory-staging` (Group review)** — picks a staging project (`openSUSE:Factory:Staging:adi:NN` or `openSUSE:Factory:NonFree:Staging:adi:NN`) for the change.
+4. **Staging project review** — the staging project rebuilds the change together with anything else queued and validates the combined state.
+5. **`opensuse-review-team` (Group review)** — human review by the openSUSE review team. This is the variable-latency step.
+
+A new review can spawn additional reviews (e.g. `licensedigger` may add a follow-up if it finds a question to resolve). Watch the full chain with `osc rq show <NN>` and re-run as needed; use `osc results --watch` for live staging-rebuild status.
+
+**Querying a staging project's combined state** (step 3–4) — the human-readable web page is `https://build.opensuse.org/staging_workflows/openSUSE:Factory/staging_projects/<staging>`, but for scripting use the API:
+
+```
+osc api "/staging/openSUSE:Factory/staging_projects/openSUSE:Factory:Staging:adi:NN?requests=1&status=1"
+```
+
+The XML tells you everything you need to triage a staging in one call: `<staged_requests>` (which SRs are in it), `<missing_reviews>` (what each still waits on — usually `opensuse-review-team`), `<building_repositories count>` and `<broken_packages count>` (the rebuild health — both `0` with `<checks>` `success` means the combined build is green), and the overall `state=` attribute (`review` = building/reviewing, `acceptable` = ready to merge). A green staging blocked only by `opensuse-review-team` is in the normal wait state, not stuck.
+
+**Interdependent packages are staged together.** When you submit a set with build interdependencies (e.g. a library + its consumers, like `girara` → `zathura` → the `zathura-plugin-*` set), the `factory-staging` bot generally pulls them into the **same** `adi:NN` staging so the combined rebuild can validate them as a unit — they then get accepted together. Submit the whole set close in time; if one is still in `factory-auto`/`licensedigger` it won't have been assigned a staging yet, so don't be alarmed that early snapshots show only some members staged. (If the bot splits an interdependent set across stagings and the rebuild breaks on the missing dep, that's a sign to ask staging maintainers to co-locate them.)
+
+**The staging assignment is not stable — re-query it, never cache an `adi:NN`.** The bot actively re-groups: a package already sitting in one staging can be **moved** to a different one as the rest of its interdependent set arrives, so the whole set ends up consolidated in a single fresh `adi:NN` (and the original staging is emptied). Observed live: `girara` was first placed alone in `adi:48`; once `zathura` and the five plugins cleared `factory-auto`/`licensedigger`, the bot moved **all seven** into `adi:44` and left `adi:48` empty. So when watching a multi-package submission, on every poll re-read the staging from each request (`osc rq show <id>` → the `Project: openSUSE:Factory:Staging:adi:NN` review line, or the `<staged_requests>` of the staging API) and follow the set to wherever it currently lives — don't keep polling the staging name from an earlier snapshot, or you'll be watching an empty project.
+
+### Filing an SR
+
+**HARD RULE: run `osc service runall source_validator` before every submit, and only file the SR if it passes.** Just as commit is gated on a green validator (see "Committing changes to OBS"), so is the SR — `factory-auto` re-runs the validator server-side and *declines* on any failure (orphaned/missing sources, unparseable spec, bad license tag, malformed `.changes` date, minisign-not-available, …), so catching it locally first avoids a pointless decline + resubmit cycle. Run it **unpiped** and check the real `rc` (`osc service runall source_validator >/tmp/sv.log 2>&1; rc=$?`), then `&& osc sr ...` — never `;`, never pipe before the `&&` (a pipeline's exit status is `tail`'s, masking the failure). This applies to **every** target (Factory, NonFree, devel-project PRs' equivalent checks). For a package you committed moments ago the sources are unchanged, but still re-run it before the SR — it's cheap and it's the exact gate the server will apply.
+
+```
+# From the package checkout, after a clean local build and a fresh commit:
+osc service runall source_validator >/tmp/sv.log 2>&1 && osc sr <target-project> -m "<short message>"
+```
+
+The `-m` message goes into the SR's `Message:` field. Convention is to make it a *paste* of the new `.changes` entry's bullets (so reviewers can see what's changing without clicking through). This is the one place where pasting the full .changes bullets is appropriate — unlike `osc commit -m`, where one summary line is correct.
+
+If you skip `-m`, `osc sr` opens an editor seeded with the new `.changes` bullets.
+
+Even with `-m`, `osc sr` prints a confirmation diff and asks `Create this request? (y/N)` interactively. Pass `--yes` to skip the prompt when running non-interactively (e.g. from this skill). The `-m` value is also picked up *before* the prompt, so `osc sr <target> -m "..." --yes` is the canonical non-interactive form.
+
+**Delaying/scheduling an `osc` action (sr, commit, mr) — use a local scheduled wakeup, NOT the remote `/schedule` skill.** When a submit must wait (e.g. a Git-workflow PR needs to merge + sync into OBS before `osc sr` to Factory; see the git-workflow section), schedule a **local session wakeup** to resume and run the osc command. **Do not use the `/schedule` skill (remote cloud routines) for this** — those agents run in an isolated cloud sandbox without your local `~/.config/osc/oscrc` credentials, so they cannot authenticate to `api.opensuse.org`/`api.suse.de` and the `osc sr`/`osc commit`/`osc mr` will fail. Any credential-dependent osc/git-push action belongs in the *local* session. Have the scheduled step **verify the precondition before acting** — e.g. `osc cat <devel-project> <pkg> <pkg>.spec | grep ^Version:` shows the new version (PR merged + synced) — and skip/report rather than submit a stale revision if it hasn't. (Real case: hwdata — a 20-min local wakeup verified `devel:openSUSE:Factory/hwdata` had synced to 0.408, then filed the Factory SR.)
+
+### Gotchas observed in practice
+
+- **Declined because target was removed upstream.** If you SR a package and the destination has since been removed from Factory, the SR will be declined with a message like *"The package 'openSUSE:Factory/foo' has been removed"*. Before resubmitting, check whether the package still exists at the target with `osc list <target-project> | grep <name>`.
+- **A devel-project package is not necessarily in Factory — `osc sr` to a missing target is a *new-package* submission.** When `osc sr openSUSE:Factory` prints `Warning: failed to fetch meta data for 'openSUSE:Factory' package '<pkg>' (new package?)`, the package does not exist in Factory yet (confirm with `osc develproject openSUSE:Factory <pkg>` → 404). The SR is still created and valid, but it is treated as a **new package**: it picks up the regular bots *plus* a stricter new-package legal/review pass by `opensuse-review-team`, so expect slower acceptance than an in-place update. Flag this to the user up front — "this package isn't in Factory, so this is a new-package submission" — rather than presenting it as a routine update. (ior was a benchmark devel-project package not present in Factory; SR 1355890 was a new-package submission.)
+- **`osc commit` can race with collaborators.** If someone else's SR is mid-flight when you commit, your commit will produce a divergent revision and any auto-forwarded SR will reflect *yours*, not theirs. Coordinate before pushing if the package has multiple active maintainers.
+- **NonFree subset of arches.** Even with a successful build, `openSUSE:Factory:NonFree` projects often hold a subset of architectures back as `succeeded(unpublished)`. This is policy, not a failure — don't try to fix it by editing the spec.
+- **`factory-auto` declines minisign-signed packages.** OBS's source_validator does not have the `minisign` binary available, so any package shipping a `*.minisig` `Source` will be declined by `factory-auto` with `Source validator failed. ERROR: minisign command not available`. The fix is to drop the `*.minisig` (and the accompanying `*.keyring` minisign pubkey, which is then orphaned) from the spec and the package directory before resubmitting. Minisign signatures are useful for *upstream* download verification but cannot be enforced by OBS itself, so they add no value in the package. Document the removal in `.changes` with the validation-failure reason. After fixing, commit and file a new `osc sr`. A declined SR is terminal, but you can still pass **`osc sr <target> --supersede <declined-id> -m "..." --yes`** — `--supersede` works even on a `declined` request and sets it to `superseded by <new-id>` (rather than leaving an orphaned `declined` entry), giving a clean audit trail linking the resubmission to what it replaced. A plain fresh `osc sr` also works; `--supersede` is the tidier choice when you know the old request id.
+- **`factory-auto` decline for "Source URLs are not valid / Failed to download" — distinguish a transient upstream blip from a persistent OBS-side fetch block.** factory-auto (and the staging bot) re-fetch every `Source:` URL *from OBS infrastructure* to verify the committed tarball matches upstream; on failure the SR is declined with `Source URLs are not valid. Try 'osc service runall download_files'. ERROR: Failed to download "<url>"`. **The trap: it can fetch fine from your laptop and still fail on OBS.** Diagnose properly before acting:
+  1. Is the URL reachable from your machine? `curl -sIL --max-time 30 "<url>" | head -1` → `HTTP/1.1 200 OK`, and `sha256sum <local-tarball>` vs a fresh download to confirm the committed tarball is current.
+  2. **Has it failed more than once, and is asl-style history present?** Check the package's SR history: `osc api '/request?view=collection&roles=target&types=submit&project=openSUSE:Factory&package=<pkg>&states=accepted'` — if the **last accepted SR is years old** while recent ones all decline on download, the URL is **persistently unreachable from OBS**, not transient.
+  - **Transient** (reachable from you, has succeeded recently, fails once): just resubmit — no content change; file a fresh `osc sr` (optionally `--supersede` the declined one).
+  - **Persistent OBS-side block** (you can fetch it but OBS repeatedly can't): retrying is futile. This is common with **non-standard ports** — e.g. `asl` on `john.ccac.rwth-aachen.de:8000` has been un-fetchable by OBS for years (last accepted 2022; every update since declines on the same download, even though `curl` to `:8000` returns 200 locally and the host has no port-80/https mirror). The remedy is to give factory-auto a source it *can* verify: a fetchable mirror URL on a standard port, **or** drop the URL entirely so there's nothing to verify — `Source:  <name>-%{version}.tar.bz2` (bare filename, upstream URL kept in a `# ` comment above it), with the tarball committed in the package. **Confirmed:** with a bare-filename `Source` (no URL), factory-auto's source check passes (`Check script succeeded`) — it only validates download for sources that *are* URLs. Don't keep blindly resubmitting an OBS-unreachable URL. Confirm the package isn't simply stuck-by-design before spending effort; some packages with unreachable upstreams are knowingly parked in their devel project.
+- **Rolling-release upstreams that keep only the latest build.** Some projects publish a single moving tarball plus build-numbered snapshots and prune old snapshots (e.g. `asl`: `asl-current.tar.bz2` alongside `asl-current-142-bld<NNN>.tar.bz2`, where stale `bld<NNN>` files eventually disappear). If a download-failure decline turns out to be a *removed* tarball rather than a transient outage, bump to the current build: fetch the rolling `*-current` tarball, read the embedded build number (e.g. `version.h`), update the `%define rev`/`Version`, and confirm `sha256sum` of the rolling tarball matches the new build-numbered one. If the rolling tarball's sha256 equals your already-committed tarball, you're already current — so the decline is *not* a removed-tarball problem; it's either transient or a persistent OBS-side fetch block (see the previous bullet to tell which), and bumping the version won't help.
+- **When the upstream download host is *down* mid-update (HTTP 5xx, e.g. Cloudflare 522), DEFER the package — do not degrade to a worse source just to proceed.** A transient outage of the canonical host (e.g. `downloads.mariadb.com` returning 522) blocks fetching the official tarball, but the fix is to wait/retry, not to switch the `Source:` to something inferior. Specifically, **do not swap a signed `-src`/release tarball for a GitHub auto-archive** to dodge the outage: the auto-archive loses the upstream **GPG signature** (`.asc`) verification *and* any **bundled submodules/vendored deps** the release tarball ships, and changes the top-dir name — a real regression carried forever for a momentary outage. Instead: **bank the front-loaded analysis** (which patches drop/rebase, soversion, new deps — see the change-extraction rule) into a memory/note, defer the package, and retry the official host later (a scheduled wakeup is handy). Distinguish this *transient host outage* from a *persistent OBS-side fetch block* (previous bullets): the latter justifies a bare-filename `Source` or a fetchable mirror; the former just needs patience. (Real case: mariadb-connector-c 3.4.9 — `downloads.mariadb.com` 522 with no usable mirror; deferred with analysis banked rather than switching to the GitHub archive.)
+
+## Maintenance updates (Backports / Leap)
+
+A change that already landed in the devel project (and is in flight to Factory) does **not** automatically reach released distributions — Leap, Package Hub, etc. Those are maintained separately and require a *maintenance request* (MR), which is a different workflow from `osc sr`. The typical sequence:
+
+1. **`osc maintained <pkg>`** — discovers which maintained products carry the package today. Output is one `<project>/<package>` line per instance, e.g. `openSUSE:Backports:SLE-15-SP7:Update/fwts`. If the output is empty, there's nothing to update — the package isn't in a released distribution. Always run this first; assumptions about "is this in Leap?" are unreliable.
+
+2. **`osc mbranch <pkg>`** — branches every maintained instance into `home:<you>:branches:OBS_Maintained:<pkg>/<pkg>.<product>`. Errors with `branch target package already exists` if you (or a previous session) already branched it; that's fine, reuse the existing branch — don't `osc rdelete` it just to recreate, you'll lose any in-flight edits there.
+
+3. **Bring the fix into the maintenance branch.** Two equally valid paths:
+   - Check it out (`osc co home:<you>:branches:OBS_Maintained:<pkg> <pkg>.<product>`) and redo the spec/changes edits in place. Fine when the maintenance distro needs a *different* fix from the devel one (older toolchain, missing dep, etc.).
+   - **`osc copypac -e -K <devel_project> <devel_package> <branch_project> <branch_package>`** — bulk-copies the sources straight from the devel project, no checkout needed. `-K` keeps the link relationship so the branch stays a maintenance branch (not a fork); `-e` expands link sources before copying so what lands is the fully-resolved files, not a link reference. Best when the released distro should get the *same* fix that just went to devel. The OBS commit message records `revision:NN, using keep-link, using expand` so the audit trail is clear.
+
+4. **`osc maintenancerequest <branch_project> <branch_package> <release_project> -m "..."`** (alias `osc mr`) — files the actual MR. The release project is the maintained product, **not** `openSUSE:Maintenance` — `osc mr` rewrites internally to target `openSUSE:Maintenance` and prints `Using target project 'openSUSE:Maintenance'. (release in 'openSUSE:Backports:SLE-15-SP7:Update')` to confirm. Result is a numeric request ID printed on the last line.
+
+Gotchas observed in practice:
+
+- **`osc maintenancerequest` has no `--yes` flag.** Unlike `osc sr`, there's no built-in non-interactive switch. Pipe `echo y |` to confirm when scripting. The `-m` message is the same convention as for `osc sr` — paste the new `.changes` bullets.
+- **Wiki says bug references are mandatory for Backports — they aren't.** `openSUSE:Backports_Package_Submission_Process` lists "A bug entry in bugzilla, referenced in the submission" as a requirement for Package Hub 15 submissions. That item is **outdated**; current Backports policy does not enforce a bugzilla reference. The rest of that wiki page (factory-source must accept, must already be in Factory or a maintained Leap, must respect Leap maintenance policy) is still valid.
+- **Branch vrev tells you whether someone's already worked on it.** `osc cat <branch_project> <branch_package> fwts.spec` reveals the in-branch version. If it's older than the devel-project version, the branch is stale and you need step 3 above. If it already matches, you can skip straight to step 4.
