@@ -191,6 +191,29 @@ https://en.opensuse.org/openSUSE:Systemd_packaging_guidelines
 
 When packaging language-specific software, fetch the matching wiki page for the full rules — these summaries cover only the structural choices.
 
+- **Vendored-dependency packages (Go / Rust / Node / any language whose deps are fetched at build time): generate the vendor bundle with a `_service`, the thin-provisioning-tools way — do NOT hand-vendor, and do NOT download a language toolchain yourself to run `go mod vendor` / `cargo vendor` by hand.** The canonical setup is a `_service` file (services `mode="manual"`) that fetches the source and produces the vendor tarball, whose output you then commit as *tracked sources* and consume from the spec. Worked model (thin-provisioning-tools, a Rust pkg — the same shape applies to Go with `cargo_vendor`→`go_modules`):
+  ```xml
+  <services>
+    <service name="obs_scm" mode="manual">      <!-- fetch upstream at the tag -->
+      <param name="url">https://github.com/…/foo.git</param>
+      <param name="scm">git</param>
+      <param name="revision">refs/tags/v1.3.2</param>
+      <param name="versionformat">@PARENT_TAG@</param>
+      <param name="versionrewrite-pattern">v(.*)</param>
+      <param name="changesgenerate">enable</param>
+    </service>
+    <service name="tar" mode="manual"/>
+    <service name="recompress" mode="manual"><param name="file">*.tar</param><param name="compression">zst</param></service>
+    <service name="set_version" mode="manual"/>
+    <service name="cargo_vendor" mode="manual">   <!-- Go: name="go_modules" -->
+      <param name="srcdir">foo</param>           <!-- Go: point at the dir holding go.mod -->
+      <param name="compression">zst</param>
+      <param name="update">true</param>
+    </service>
+  </services>
+  ```
+  Then in the spec: `Source0: %{name}-%{version}.tar.zst`, `Source1: vendor.tar.zst`, and `%autosetup -a1` (or `-p1 -a1`) to unpack the vendored tree next to the source. Commit the generated `%{name}-%{version}.tar.zst` **and** `vendor.tar.zst` (plus `_service` / `_servicedata` / `*.obsinfo`) as real package files. Run the services with `osc service manualrun` (the host needs the matching `obs-service-cargo` / `obs-service-go_modules` and toolchain) **or** let them run server-side — either way the point is that the *service* produces `vendor.tar.*`, never a by-hand vendor dir. This is the preferred way to create any new vendored-deps package; the per-language rows below give the build macros.
+
 | Language | Tooling | Naming | Wiki |
 |---|---|---|---|
 | Python | `py2pack fetch && py2pack generate` for the initial spec. Build via `%pyproject_wheel` / `%pyproject_install` (legacy `%python_build`/`%python_install` is forbidden). Use `%{python_module foo}` in `BuildRequires` only; never in `Requires`. Use `%python_subpackages` to multiplex flavours. | Modules: `python-<pypi-name>` (singlespec, all flavours). Apps: keep upstream name, single flavour. Jupyter-only: `jupyter-<name>`. | https://en.opensuse.org/openSUSE:Packaging_Python |
