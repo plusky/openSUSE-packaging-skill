@@ -34,6 +34,7 @@ Call these instead of hand-writing the osc-API / Repology incantations every tim
 - `gpg-verify.sh <tarball> <keyring>` — verify a signed source tarball against a package keyring (handles the ASCII-armored-keyring trap).
 - `build-summary.sh [repo-arch]` — the last `osc build`'s result, `%check`/ctest pass count, rpmlint badness summary + every E:/W: line, and the produced RPMs, in one `sudo`-wrapped invocation (the build log is root-owned).
 - `cone-status.sh <project> [repo] [arch]` — per-package build-status table for a whole project (a dependency cone in a `home:` project) with a loopable exit code (`0` all green, `1` in flight/dirty, `2` settled failure). The watch view for the unattended/remote-build mode; encodes the stale-failure-while-rebuilding guard so it won't cry failure on a pending rebuild.
+- `leap-sync.sh <pkg> [leap-branch]` — push the latest Factory `<pkg>` to Leap (Package Hub git workflow): clone `pool/<pkg>`, content-sync the `leap-16.x` branch up to `factory`, fetch LFS, fork, push, open the PR. Refuses new-to-Leap packages (no existing leap branch → needs a `pool` maintainer; see `references/git-workflow.md`).
 
 Each script prints usage with `--help` and defaults the OBS account to `osc whois` unless `--user` is given.
 
