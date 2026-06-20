@@ -89,6 +89,16 @@ Before submitting, confirm the merge actually synced into OBS — `osc cat <obs-
 
 **Skip `osc results` before the SR for git-tracked packages.** When the package lives in a git-based devel project (the Git packaging workflow), build verification is the PR/autogits bot's job — it already built the change and posted results on the Gitea PR before it merged. Polling `osc results <obs-devel-project> <pkg>` before `osc sr` is therefore the wrong check for git-tracked packages; skip it and go straight from "merge synced into OBS" to `osc sr`. (The pre-SR `osc results` poll still applies to **classic osc-checkout** devel projects, where OBS is the only thing that built your commit.)
 
+### Leap 16 / SLFO (Package Hub) — PR to the `leap-16.x` branch of `pool`, not a devel repo
+
+Leap 16 is built on **SLFO** (SLES 16 / `SUSE:SLFO:1.2`) and takes community-package contributions **exclusively via the git workflow**. The topology differs from Factory in one crucial way: **the per-product branches live in `pool/<pkg>` itself**, so for Leap you **DO** target `pool` (the opposite of the Factory rule above).
+
+- `pool/<pkg>` carries multiple branches: **`factory`** (Tumbleweed, the default/source-of-truth), **`leap-16.0`**, **`leap-16.1`**, … (one per Leap product). SLE-origin packages instead use **`slfo-main`** / **`slfo-x.y`** branches; when both a `slfo-*` and a `leap-x.y` branch exist, work from the **`leap-x.y`** one.
+- **A Leap 16.x community-package update is a PR targeting the `leap-16.x` branch of `pool/<pkg>`** (Package Hub submission). Fork `pool/<pkg>`, branch off `leap-16.x`, sync it to the desired version, push to your fork, and open the PR with `base = leap-16.x`. The `openSUSE:Backports:SLE-16.0` OBS project is **scmsync read-only** (`<scmsync>…/products/PackageHub#leap-16.0`), fed from those branches — so `osc sr … openSUSE:Backports:SLE-16.0` is the *old* path and is wrong here.
+- **Syncing leap-16.x up to Factory is a *content* sync, not a `git merge`.** The branches usually have **unrelated histories** (OBS→Git import), so `git merge origin/factory` fails with *"refusing to merge unrelated histories"*. Instead make the tree identical to factory as one commit: `git rm -rqf . && git checkout origin/factory -- . && git add -A && git commit -m "Update to <ver> (sync leap-16.x with Factory)"`. (The old `<ver>.obscpio` LFS file is dropped and the new one added automatically.)
+- **LFS gotcha on push:** clone with `GIT_LFS_SKIP_SMUDGE=1` (pointers only), but before pushing the branch to your fork you must have the actual LFS objects locally or the push fails with *"Unable to find source for object …"*. Run **`git lfs fetch --all origin`** first, then push.
+- **Review policy:** the Backports/Package Hub team approves; if the sources **match** openSUSE:Factory (or a maintained Leap) no extra sign-off is needed, but a deviation from Factory, or a submitter who isn't a regular Factory maintainer of the package, needs separate Factory-maintainer approval. So sync to *exactly* the Factory version when you can. (Real case: `pool/xmrig` leap-16.0 6.22.0→6.26.0 — PR `pool/xmrig#1` to the `leap-16.0` branch; <your-obs-account> maintains xmrig in Factory so it qualified.)
+
 ### AGit workflow (no fork)
 
 Push straight to a magic ref to auto-create a PR — no fork needed:
