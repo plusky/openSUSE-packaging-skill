@@ -18,9 +18,11 @@
 # Usage: leap-sync.sh <pkg> [leap-branch]      (leap-branch default: leap-16.0)
 set -uo pipefail
 [ $# -ge 1 ] || { sed -n '2,21p' "$0"; exit 2; }
-pkg="$1"; leap="${2:-leap-16.0}"; user="<your-obs-account>"
+pkg="$1"; leap="${2:-leap-16.0}"
 tok=$(python3 -c "import yaml,os;c=yaml.safe_load(open(os.path.expanduser('~/.config/tea/config.yml')));print([l['token'] for l in c['logins'] if l['name']=='src.opensuse.org'][0])" 2>/dev/null)
 [ -n "$tok" ] || { echo "no src.opensuse.org token in ~/.config/tea/config.yml" >&2; exit 2; }
+user=$(python3 -c "import yaml,os;c=yaml.safe_load(open(os.path.expanduser('~/.config/tea/config.yml')));print(next((l.get('user') for l in c['logins'] if l['name']=='src.opensuse.org'),''))" 2>/dev/null)
+[ -n "$user" ] || { echo "could not determine your src.opensuse.org username from the tea login" >&2; exit 2; }
 
 wd=$(mktemp -d); trap 'rm -rf "$wd"' EXIT
 GIT_LFS_SKIP_SMUDGE=1 git clone -q "https://src.opensuse.org/pool/$pkg.git" "$wd/$pkg" || { echo "no pool/$pkg repo" >&2; exit 2; }
@@ -38,8 +40,7 @@ git checkout -q -b "$br" "origin/$leap"
 git rm -rqf . >/dev/null 2>&1
 git checkout "origin/factory" -- .
 git add -A
-git -c user.name="the maintainer" -c user.email="<your-git-email>" \
-    commit -q -m "Update to $fver (sync $leap with Factory)"
+git commit -q -m "Update to $fver (sync $leap with Factory)"
 git lfs fetch --all origin >/dev/null 2>&1
 
 tea repo fork --repo "pool/$pkg" --login src.opensuse.org >/dev/null 2>&1

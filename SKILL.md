@@ -22,6 +22,8 @@ Show the diff, commit, file the `osc sr` (or a Gitea PR for git-workflow package
 
 The three blocks form a **loop**: Block 3 feedback (a decline, a staging FTBFS, a reviewer comment) routes back into Block 2, which re-builds and re-gates before the next submit.
 
+**Bug-driven entry point.** For "check my bugs", "what needs addressing", or working an assigned VUL/CVE bug, start from `references/bugzilla-cve-triage.md` — it covers querying assigned bugs, the maintainership audit, per-CVE triage (fixed vs disputed vs EOL-product, the supported-product matrix incl. SLFO), closing via the bugzilla REST API (read-only by default — never write without explicit approval), and citing `boo#` in changelogs. It feeds the same three-block pipeline (a lagging supported product becomes a Block 2/3 update).
+
 ### Bundled scripts (`scripts/`)
 
 Call these instead of hand-writing the osc-API / Repology incantations every time (they encode the exact queries that are easy to get subtly wrong — the `role='maintainer'` person match, the `roles=creator` request search, the Repology pagination + `srcname` intersection):
