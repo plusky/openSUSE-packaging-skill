@@ -297,6 +297,18 @@ When a build fails locally, check this list before debugging from scratch.
 - **Don't recompress a `_service`-fetched source tarball to `.tar.zst` just for size — the minimal build chroot may lack `/usr/bin/zstd`** (`%prep` dies with `sh: /usr/bin/zstd: No such file or directory`). Either keep the `tar` service output as a plain `.tar` (drop the `recompress` service — simplest, and a single `osc service manualrun` then produces everything unattended) or recompress to `.gz` (universally present). Reserve `.zst` for cases where the package already pulls `zstd` in, or add `BuildRequires: zstd` deliberately.
 - **A brand-new package whose spec has an empty `%changelog` fails the build with `error: %source_date_epoch_from_changelog is set, but %changelog has no entries to take a date from`.** rpm derives `SOURCE_DATE_EPOCH` from the newest `.changes` entry; a new package with no `.changes` (or an empty one) has nothing to read. **Fix: create the `<name>.changes` with an initial entry before the first build** — a single `- Initial package (version X.Y)` bullet under the standard dated/author header (see "Adding a .changes entry"). This is the new-package analogue of the always-add-a-changelog rule.
 
+### Functionally test the built package when a change warrants it
+
+"It built" is not "it works." For **API/ABI ports** (fuse2→fuse3, openssl 1.1→3, a Qt major bump), **behaviour changes**, or anything where a clean compile doesn't prove the feature still functions, install the freshly-built RPM into a throwaway **podman container of the target distro** and exercise the real behaviour — better to verify than to ship a broken package. (Skip it for pure changelog/metadata changes.)
+
+```
+podman run --rm --device /dev/fuse --cap-add SYS_ADMIN \
+  --security-opt apparmor=unconfined --security-opt label=disable \
+  -v "$DIR:/rpm:ro" registry.opensuse.org/opensuse/tumbleweed bash /rpm/test.sh
+```
+- FUSE/mount tests need `--device /dev/fuse --cap-add SYS_ADMIN`; `--security-opt label=disable` avoids the SELinux *"Permission denied"* on the bind-mount; `chmod -R a+rX` the shared dir first (rootless userns maps your files).
+- **Assert the actual function, not just that it starts.** (Real case: the tarix fuse2→fuse3 port — created a tar, `tarix -i` an index, `fuse_tarix` mounted it, then `cat`/`readlink` the mounted files **and** confirmed writes still return EROFS — i.e. that the read path works *and* the retained read-only stubs still reject writes.)
+
 ### Switching a package off a dead upstream fork to a maintained lineage
 
 When the package tracks a **dead fork** and the CVE/bug fix only exists in a *different* upstream lineage that the other distros moved to (the cross-distro survey reveals this — see `bugzilla-cve-triage.md`), the fix is a **lineage switch**, not a patch. Mechanics that recur (real case: **xar** — mackyle 1.6.1, dead since 2012 → Apple `apple-oss-distributions/xar` build 503, as Debian/Fedora/Gentoo all did):
