@@ -21,6 +21,8 @@ curl -s https://src.opensuse.org/api/v1/repos/pool/<pkg>/branches   # look for l
 
 **Key trap:** `openSUSE:Backports:SLE-16.0` (OBS) is **scmsync read-only** (`<scmsync>…/products/PackageHub#leap-16.0`), fed from the `leap-16.x` branches — so `osc sr … openSUSE:Backports:SLE-16.0` is the *old* path and is wrong. Submit via the git PR to the branch.
 
+**Factory and Leap can use *different* mechanisms for the same package — check each independently.** `pool/<pkg>` having a `factory` branch does **not** mean Factory consumes it: a package can be **OSC-managed for Factory** (`osc api /source/openSUSE:Factory/<pkg>/_meta` shows a `<devel project=…>`, not `<scmsync>`) while its Leap variant is **git/scmsync-managed** (`leap-16.x` pool branches). When so, the *same* fix goes out two ways in one session: `osc sr` to Factory via the devel project, **and** a git PR to each `leap-16.x` branch. (Real case: archmage — Factory devel project `Archiving` via `osc sr`, but Leap 16.0/16.1 are `pool/archmage` `leap-16.x` branches via PR; the `pool/archmage:factory` branch is just the git mirror, not Factory's source.)
+
 ## 2. Is the Leap branch actually behind? (don't sync a no-op)
 
 `leap-16.0`/`leap-16.1` usually point at the same commit, but **not always** — verify per branch, don't assume:
