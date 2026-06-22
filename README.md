@@ -9,9 +9,9 @@ Git packaging workflow (src.opensuse.org / Gitea).
 ```
 SKILL.md                     orchestrator — the three-block pipeline + cross-cutting rules
 references/
-  1-triage.md                Block 1 — is a package out of date?
-  2-update-build.md          Block 2 — update → build → clean up (+ FTBFS pitfalls)
-  3-submit-watch.md          Block 3 — commit → submit → watch → loop back
+  triage.md                  Block 1 — is a package out of date?
+  update-build.md            Block 2 — update → build → clean up (+ FTBFS pitfalls)
+  submit-watch.md            Block 3 — commit → submit → watch → loop back
   specfile-guidelines.md     per-section spec rules (consulted during Block 2)
   git-workflow.md            src.opensuse.org clone / fork / PR
   leap-slfo.md               routing Leap 16.x / SLFO / Backports submissions
@@ -29,7 +29,7 @@ Copy (or symlink) the repo contents to `~/.claude/skills/openSUSE-packaging/`. T
 three block agents spawnable as `subagent_type`s, symlink them into `~/.claude/agents/`:
 
 ```sh
-for a in 1-triage:osc-triage 2-update-build:osc-update-build 3-submit-watch:osc-submit-watch; do
+for a in triage:osc-triage update-build:osc-update-build submit-watch:osc-submit-watch; do
   ln -sfn "$PWD/agents/${a%%:*}.md" ~/.claude/agents/"${a##*:}.md"
 done
 ```
