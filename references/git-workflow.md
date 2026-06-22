@@ -69,6 +69,18 @@ curl -sS -X POST "https://src.opensuse.org/api/v1/repos/<devel-project>/<pkg>/pu
   -d '{"head":"<youruser>:<branch>","base":"main","title":"...","body":"..."}'
 ```
 
+**Build the JSON payload in Python, not by interpolating the body into a `-d "{…\"body\":\"$BODY\"…}"` string.** A PR body almost always contains characters that break inline JSON — a literal `"quoted phrase"`, a backtick, a newline — and the failure is silent-ish: the branch is already pushed, so you just get `jsontext: invalid character '…'` and *no PR*. Use `json.dumps({...})` with `urllib` (it escapes everything), the same shape as the [bug-close snippet](bugzilla-cve-triage.md). (Real case: a body containing `"WARNING: Cannot open …"` broke the curl `-d`; rebuilding the payload with `json.dumps` fixed it.)
+
+### Verify a push/PR actually landed — don't trust a piped push
+
+**Never confirm `git push` through a pipe** (`git push -q 2>&1 | tail -1 && echo pushed`): the pipeline's exit status is the *last* stage's (`tail`, always 0), so a failed push reports success and the remote silently stays stale. Push **unpiped** and read the result: a real push prints `   <old>..<new>  <branch> -> <branch>` (or `* [new branch] …`); check `echo "exit=$?"`. (Real case: an entire session's commits to a GitHub skill repo *looked* pushed every time but never left the laptop — the remote sat on the pre-session commit. See [[verify-git-push-exit-code]].) For an important push, compare the remote HEAD afterwards via the API (`/commits?per_page=1`) against `git rev-parse HEAD`.
+
+**Verify the LFS *object* uploaded, not just the pointer.** `git lfs push origin <branch>` is also commonly piped, and a missing LFS object only surfaces later as a bot/OBS build failure (*"Unable to find source for object …"*). Gitea's `…/raw/branch/<branch>/<tarball>` returns the **pointer** (~130 B) — that only proves the git content, not the object. Fetch the **`…/media/branch/<branch>/<tarball>`** endpoint (LFS-resolving) and confirm its byte count equals the pointer's declared `size`:
+```
+ptr=$(curl -s .../raw/branch/<branch>/<tarball>)         # has "size <N>"
+actual=$(curl -s .../media/branch/<branch>/<tarball> | wc -c)   # must equal <N>, and be >2 KB
+```
+
 What happens after the PR opens:
 - The **`autogits-devel` bot** automatically opens a second PR against the project's `_ObsPrj` repo.
 - The **`autogits_obs_staging_bot`** creates an OBS build project, builds the change, and **posts build results as a comment on your PR** — this is your server-side build feedback (you don't need an OBS home branch just to see if it builds).
