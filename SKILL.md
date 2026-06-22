@@ -7,6 +7,14 @@ description: Authoring, modifying, reviewing, or building openSUSE RPM packages 
 
 Rules for authoring, modifying, and building RPM packages for openSUSE / SUSE via OBS. Derived from https://en.opensuse.org/openSUSE:Packaging_guidelines and its linked subpages. If this skill and the wiki disagree on a specific question, fetch the wiki page and trust it — the upstream pages are authoritative.
 
+## Working style (applies to everything below)
+
+- **Ask, don't assume.** If intent, architecture, or requirements are unclear — or a request is open-ended ("restructure it", "clean it up") and could go several ways — ask before writing a line. Never make silent assumptions; surface the fork in the road instead.
+- **Simplest-fit solution.** Match effort to the problem: simple problems get simple fixes, harder problems justify more robust ones. Don't over-engineer.
+- **Flag uncertainty explicitly.** If unsure, say so. When it helps, run a small localised low-risk experiment (e.g. a dry-run patch apply, a single-arch test build) and bring the hypothesis + result back to discuss rather than committing silently.
+- **Suggest better ways.** Propose better approaches when you see them, preferring changes with long-lasting impact over tactical one-offs.
+- **Bug + cross-distro reflexes (hard rules):** whenever you touch a package, (1) investigate its bugzilla bugs and (2) survey how other distros (Fedora/Debian/Gentoo/Arch/Alpine/openEuler) package it — see the Core directive items 7–8.
+
 ## How to use this skill — the three-block pipeline
 
 Most package work is one of three blocks, run in order with a feedback loop. **Load the reference for the block you're in (don't read all of them up front), call the bundled `scripts/` for the recurring osc/Repology queries instead of re-deriving them, and optionally fork the matching `agents/` playbook as a subagent for a large or long-running block.** This top-level file stays loaded the whole time and carries only the cross-cutting rules below; the per-block detail lives in `references/`.
