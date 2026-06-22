@@ -14,8 +14,12 @@ references/
   3-submit-watch.md          Block 3 — commit → submit → watch → loop back
   specfile-guidelines.md     per-section spec rules (consulted during Block 2)
   git-workflow.md            src.opensuse.org clone / fork / PR
-scripts/                     reusable osc / Repology helpers (my-packages, my-requests,
-                             outdated, devel-of, gpg-verify)
+  leap-slfo.md               routing Leap 16.x / SLFO / Backports submissions
+  bugzilla-cve-triage.md     bug-driven entry: triage + close assigned (CVE) bugs
+scripts/                     reusable osc / Repology / bugzilla / distro helpers
+                             (my-packages, my-requests, sr-status, outdated, devel-of,
+                             gpg-verify, build-summary, cone-status, leap-sync,
+                             bug-scan, distro-survey)
 agents/                      forkable delegation playbooks for the three blocks
 ```
 

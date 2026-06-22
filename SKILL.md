@@ -25,7 +25,7 @@ Enumerate what you maintain, compare against upstream **by date, not version str
 **Block 2 — Update, build, clean up.** → read `references/2-update-build.md` (plus `references/specfile-guidelines.md` for spec-section authoring rules, and `references/git-workflow.md` if the package is git/scmsync rather than a classic `.osc` checkout)
 Bump the version / run the source service, rebase or drop patches, run spec-cleaner, build locally with `osc build` (read the rpmlint summary, run `%check`), and fix FTBFS from the pitfalls catalog. **Gate to leave this block: a clean local `osc build` *and* a green `source_validator`.**
 
-**Block 3 — Submit to Factory and watch.** → read `references/3-submit-watch.md`
+**Block 3 — Submit to Factory and watch.** → read `references/3-submit-watch.md` (and `references/leap-slfo.md` when the change also needs to reach Leap 16.x / SLFO — it routes community-Package-Hub vs SLE-base branches and the content-sync-vs-direct-apply decision)
 Show the diff, commit, file the `osc sr` (or a Gitea PR for git-workflow packages), then watch the submission. If a review declines or comments, evaluate it — trivial source/spec fixes loop straight back to **Block 2**, which re-gates before re-submitting. Scripts: `scripts/my-requests.sh`, `scripts/devel-of.sh`.
 
 The three blocks form a **loop**: Block 3 feedback (a decline, a staging FTBFS, a reviewer comment) routes back into Block 2, which re-builds and re-gates before the next submit.
@@ -44,7 +44,9 @@ Call these instead of hand-writing the osc-API / Repology incantations every tim
 - `gpg-verify.sh <tarball> <keyring>` — verify a signed source tarball against a package keyring (handles the ASCII-armored-keyring trap).
 - `build-summary.sh [repo-arch]` — the last `osc build`'s result, `%check`/ctest pass count, rpmlint badness summary + every E:/W: line, and the produced RPMs, in one `sudo`-wrapped invocation (the build log is root-owned).
 - `cone-status.sh <project> [repo] [arch]` — per-package build-status table for a whole project (a dependency cone in a `home:` project) with a loopable exit code (`0` all green, `1` in flight/dirty, `2` settled failure). The watch view for the unattended/remote-build mode; encodes the stale-failure-while-rebuilding guard so it won't cry failure on a pending rebuild.
-- `leap-sync.sh <pkg> [leap-branch]` — push the latest Factory `<pkg>` to Leap (Package Hub git workflow): clone `pool/<pkg>`, content-sync the `leap-16.x` branch up to `factory`, fetch LFS, fork, push, open the PR. Refuses new-to-Leap packages (no existing leap branch → needs a `pool` maintainer; see `references/git-workflow.md`).
+- `leap-sync.sh <pkg> [leap-branch]` — push the latest Factory `<pkg>` to Leap (Package Hub git workflow): clone `pool/<pkg>`, content-sync the `leap-16.x` branch up to `factory`, fetch LFS, fork, push, open the PR. Refuses new-to-Leap packages (no existing leap branch → needs a `pool` maintainer; see `references/leap-slfo.md`).
+- `bug-scan.sh <pkg> [--all]` — the open bugzilla bugs for a package (the "investigate bugs when you touch it" hard rule), REST fallback for when the bugzilla MCP isn't available. Prefer `mcp__bugzilla__bugs_quicksearch` when you have it.
+- `distro-survey.sh <pkg> [factory-version]` — version (+ lineage hint) across Fedora/Debian/Gentoo/Arch/Alpine/openEuler in one call (the "survey other distros when you touch it" hard rule). Divergence flags a newer version, a different upstream lineage, or a patch worth pulling.
 
 Each script prints usage with `--help` and defaults the OBS account to `osc whois` unless `--user` is given.
 
