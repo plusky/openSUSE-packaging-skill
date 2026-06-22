@@ -44,6 +44,11 @@ Compare the `Version:` on each target branch against Factory before doing anythi
 
 A Gitea PR merges into an *existing* base branch, and a normal contributor has `push: false` on `pool/<pkg>` — so you **cannot** create a `leap-16.x` branch by PR. Onboarding a new package to Leap needs two `pool`/Package-Hub-maintainer actions: (1) create the `leap-16.x` branch (content = factory), (2) register it as a submodule in `products/PackageHub`'s `leap-16.x` branch `.gitmodules`. That's a coordinated request to the Backports/Package Hub team, not a stack of PRs. (Real wall: monero/monero-gui — no `leap-16.0` branch + `push:false`.)
 
+**Confirm "is it in Leap?" and "can I even do it?" with two API checks before promising anything:**
+- *In Leap?* `curl …/api/v1/repos/pool/<pkg>/branches` — **only a `factory` branch ⇒ not in Leap.** Cross-check `products/PackageHub`'s per-Leap `.gitmodules` (`…/products/PackageHub/raw/branch/leap-16.0/.gitmodules`) — a `[submodule "<pkg>"]` entry pointing at `pool/<pkg>` is what actually puts it in Leap. (`osc ls openSUSE:Backports:SLE-16.0` also lists what's there.)
+- *Can I onboard it?* `curl -H "Authorization: token …" …/api/v1/repos/pool/<pkg>` → `.permissions.push`. **`false` ⇒ stop** — you can't create the `leap-16.x` branch, and a `products/PackageHub` submodule PR would point at a branch that can't exist yet. Report it as a release-team request, don't burn cycles forking.
+- **A whole *stack* can be Factory-only even when its leaf libs are in Leap.** (Real case: zathura + its 5 plugins had only a `factory` branch each, while their deps `girara`/`mupdf` *were* in Leap. The girara/mupdf updates are normal PRs to their existing `leap-16.x` branches; the zathura stack needs the non-self-service onboarding above. Note the bug being "fixed in Leap" can be moot — if the consumer isn't shipped in Leap, the bug never affected Leap.)
+
 ## 5. Closing the loop with bugzilla / in-flight fixups
 
 - Per the bug hard rule (`references/bugzilla-cve-triage.md`), cite `boo#` for what the Leap update fixes; for Leap/SLFO submissions where acceptance is uncertain, confirm with the user whether to close on submission or leave open.
