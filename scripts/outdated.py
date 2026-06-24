@@ -9,21 +9,35 @@ Your package set: pass package names on stdin or via --names FILE (one per line,
 e.g. the second column of my-packages.sh). With no names, prints the full TW
 outdated list (large).
 
-IMPORTANT — every hit is a CANDIDATE, not a confirmed update. Verify before acting
-(see references/1-triage.md): compare by tag/commit DATE not version string,
+REPOLOGY LAGS PUBLISHED TUMBLEWEED, WHICH LAGS THE DEVEL PROJECT, so a large
+fraction of raw hits are false positives — the update already landed in Factory
+and Repology just hasn't caught up. By default (when filtering by --names/stdin)
+this script therefore cross-checks every hit against the live Factory `Version:`
+and SUPPRESSES the ones Factory already ships at the "newest" version, so the
+output is actually actionable instead of a wall of known-lag noise. Use
+--no-factory-check to skip that (raw Repology view). The cross-check needs a
+working `osc` against api.opensuse.org.
+
+Surviving candidates are still CANDIDATES, not confirmed updates — verify before
+acting (see references/triage.md): compare by tag/commit DATE not version string,
 watch for multi-track upstreams (LTS lines, parallel sonames) and deliberately
-pinned packages, and remember Repology lags the devel project. Known false
-positives stay flagged here.
+pinned packages. Known false positives stay flagged here.
 
 Usage: my-packages.sh --... | cut -f2 | outdated.py
        outdated.py --names /tmp/names.txt
+       outdated.py --names /tmp/names.txt --no-factory-check   # raw Repology
 """
-import sys, json, time, urllib.request, argparse
+import sys, json, time, urllib.request, argparse, subprocess, re
+from concurrent.futures import ThreadPoolExecutor
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--names", help="file of package names (default: stdin)")
 ap.add_argument("--repo", default="opensuse_tumbleweed")
 ap.add_argument("--ua", default="osc-update-check/1.0")
+ap.add_argument("--project", default="openSUSE:Factory",
+                help="reference project whose live Version: confirms a hit (default openSUSE:Factory)")
+ap.add_argument("--no-factory-check", action="store_true",
+                help="skip the live cross-check; print every raw Repology hit (incl. lag false positives)")
 args = ap.parse_args()
 
 src = open(args.names) if args.names else (sys.stdin if not sys.stdin.isatty() else None)
@@ -60,6 +74,47 @@ for proj, pkgs in results.items():
             seen.add(s)
             hits.append((s, p.get("version"), newest))
 
-print(f"# {len(hits)} outdated candidate(s) — VERIFY each (date, not version string)")
-for s, cur, new in sorted(hits, key=lambda x: x[0].lower()):
-    print(f"{s:32} {str(cur):24} -> {new}")
+# Cross-check against the live reference project to drop Repology-lag false positives.
+def ref_version(pkg):
+    try:
+        out = subprocess.run(["osc", "cat", args.project, pkg, f"{pkg}.spec"],
+                             capture_output=True, text=True, timeout=30).stdout
+    except Exception:
+        return None
+    for line in out.splitlines():
+        m = re.match(r"^Version:\s*(\S+)", line)
+        if m:
+            return m.group(1)
+    return None  # not in project / no parseable Version
+
+do_check = (mine is not None) and not args.no_factory_check
+refv = {}
+if do_check and hits:
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        refv = dict(zip((h[0] for h in hits),
+                        ex.map(ref_version, (h[0] for h in hits))))
+
+candidates, suppressed = [], []
+for s, cur, new in hits:
+    fv = refv.get(s)
+    if do_check and fv is not None and new != "?" and fv == new:
+        suppressed.append((s, fv))          # reference already at newest -> Repology lag
+    else:
+        candidates.append((s, cur, new, fv))
+
+shortprj = args.project.split(":")[-1] or args.project
+if do_check:
+    print(f"# {len(candidates)} candidate(s) after {args.project} cross-check, "
+          f"{len(suppressed)} suppressed as already-current — still VERIFY each (date, not string)")
+else:
+    print(f"# {len(candidates)} outdated candidate(s) — VERIFY each (date, not version string)")
+
+for s, cur, new, fv in sorted(candidates, key=lambda x: x[0].lower()):
+    extra = ""
+    if do_check:
+        extra = f"   (not in {args.project})" if fv is None else (f"   ({shortprj}={fv})" if fv != cur else "")
+    print(f"{s:32} {str(cur):24} -> {new}{extra}")
+
+if do_check and suppressed:
+    print(f"# suppressed (already at newest in {args.project}): "
+          + " ".join(f"{s}={fv}" for s, fv in sorted(suppressed)))
