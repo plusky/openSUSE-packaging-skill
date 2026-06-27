@@ -1,6 +1,7 @@
 #!/bin/bash
 # Survey how other distributions package <pkg> — version (and a patch-count hint)
-# across Fedora, Debian, Gentoo, Arch, Alpine and openEuler, in ONE call.
+# across Fedora, Debian, Gentoo, Arch, Alpine, openEuler, Void, NixOS, FreeBSD
+# ports, OpenMandriva and Mageia, in ONE call.
 # Implements the "survey other distros whenever you touch a package" hard rule
 # (catch config options / patches / fixes / a newer-or-different upstream lineage
 # we're missing). Best-effort: a distro that 404s or isn't packaged is shown as
@@ -50,5 +51,29 @@ printf '  %-10s %s\n' 'Alpine' "$alv"
 # openEuler (src-openeuler spec on gitee)
 ov=$(get "https://gitee.com/src-openeuler/$pkg/raw/master/$pkg.spec" | grep -m1 -iE '^Version:' | awk '{print $2}')
 printf '  %-10s %s\n' 'openEuler' "${ov:--}"
+
+# Void Linux (void-packages template — reliable, version=<v>)
+vv=$(get "https://raw.githubusercontent.com/void-linux/void-packages/master/srcpkgs/$pkg/template" | grep -m1 -E '^version=' | cut -d= -f2)
+printf '  %-10s %s\n' 'Void' "${vv:--}"
+
+# NixOS / FreeBSD ports / OpenMandriva / Mageia — one Repology call, by repo prefix.
+# Repology project name usually == srcname; best-effort, '-' on mismatch/absence.
+REPOLOGY=$(get "https://repology.org/api/v1/project/$pkg")
+rg() {
+  printf '%s' "$REPOLOGY" | python3 -c '
+import sys, json
+pref = sys.argv[1]
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("-"); sys.exit()
+vs = sorted({p.get("version","") for p in d if p.get("repo","").startswith(pref) and p.get("version")})
+print(vs[-1] if vs else "-")
+' "$1"
+}
+printf '  %-10s %s\n' 'NixOS'       "$(rg nix)"
+printf '  %-10s %s\n' 'FreeBSD'     "$(rg freebsd)"
+printf '  %-10s %s\n' 'OpenMandr.'  "$(rg openmandriva)"
+printf '  %-10s %s\n' 'Mageia'      "$(rg mageia)"
 
 echo "(divergence → a newer version, a different upstream lineage, or a patch worth pulling; inspect the laggard-vs-leader spec/patches directly.)"
