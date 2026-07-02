@@ -33,7 +33,7 @@ echo "### Result"
 grep -hE 'finished "build|failed "build|RPM build errors|exceeds threshold, aborting' "$log" | sed -E "$strip" | tail -2
 echo
 echo "### %check / tests"
-t=$(grep -hE '[0-9]+ (passed|failed)|[0-9]+% tests passed|Total Test time|No tests were found|Ran [0-9]+ test' "$log" | sed -E "$strip" | tail -3)
+t=$(grep -hE '[0-9]+ (passed|failed)|[0-9]+% tests passed|Total Test time|No tests were found|Ran [0-9]+ test|^\[[ 0-9]+s\] *(Ok|Fail|Expected Fail|Unexpected Pass|Skipped|Timeout): +[0-9]+' "$log" | sed -E "$strip" | tail -6)
 [ -n "$t" ] && echo "$t" || echo "(no test summary found — does the spec have a %check?)"
 echo
 echo "### rpmlint"
