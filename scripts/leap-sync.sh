@@ -93,7 +93,12 @@ git add -A
 git commit -q -m "Update to $fver (sync $leap with Factory)"
 git lfs fetch --all origin >/dev/null 2>&1 || { echo "git lfs fetch failed — push would lose LFS objects" >&2; exit 2; }
 
-# --- fork + push (token via header, never on argv / in the remote URL) -------
+# --- fork + push (token off argv AND off the remote URL) ---------------------
+# git-lfs does NOT honor http.extraHeader for its batch/upload API, so a
+# header-only push 401s on any repo with LFS objects (most pool packages).
+# Instead feed the token through git's credential machinery via GIT_ASKPASS:
+# the helper is a 0700 temp file, the token reaches git/git-lfs via a file
+# read + env var — never on a command line.
 forkerr=$(tea repo fork --repo "pool/$pkg" --login src.opensuse.org 2>&1 >/dev/null) \
   || case "$forkerr" in
        *"already exists"*|*"repository is already forked"*) : ;;   # fine, reuse it
@@ -101,7 +106,13 @@ forkerr=$(tea repo fork --repo "pool/$pkg" --login src.opensuse.org 2>&1 >/dev/n
      esac
 git remote add fork "https://src.opensuse.org/$user/$pkg.git" 2>/dev/null \
   || git remote set-url fork "https://src.opensuse.org/$user/$pkg.git"
-git -c http.extraHeader="Authorization: token $tok" push -q fork "$br" \
+askpass=$(mktemp) tokfile=$(mktemp)
+trap 'rm -f "$askpass" "$tokfile"' EXIT
+chmod 600 "$tokfile"; printf '%s' "$tok" > "$tokfile"
+printf '#!/bin/sh\ncase "$1" in\n  Username*) echo "%s" ;;\n  Password*) cat "%s" ;;\nesac\n' \
+  "$user" "$tokfile" > "$askpass"
+chmod 700 "$askpass"
+GIT_ASKPASS=$askpass git push -q fork "$br" \
   || { echo "push to $user/$pkg failed (does the fork exist? see the tea output above)" >&2; exit 2; }
 
 body="Sync the $leap branch up to the Factory version $fver (was $lver). Sources are identical to openSUSE:Factory."
