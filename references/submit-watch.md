@@ -126,6 +126,8 @@ Before `osc sr <target>`, confirm the target actually has the package — Factor
 
 ### Querying existing requests
 
+For the common cases use `scripts/sr-status.py` (state + review chain + comments table; `--brief` for a plain list; includes src.opensuse.org PRs) / `scripts/my-requests.sh` (thin wrapper for the brief view) — the commands below are what they wrap, for custom queries.
+
 | Command | What it shows |
 |---|---|
 | `osc rq list <project>` (alias `osc request list`) | Open requests **involving** that project — both directions (source or target). |
@@ -160,6 +162,8 @@ A recurring task is "which of my submissions are declined and need attention?" W
    - Fix → local build → `osc diff` → `source_validator && osc commit` → resubmit (`osc sr <devel>/<pkg> openSUSE:Factory --supersede <declined-id>`).
 3. **"The package '…' has been removed"** — the target is gone from Factory; a plain resubmit just re-declines. This is now a **new-package submission**: update + cleanup + make it build cleanly (these are often packages dropped *for* a CMake-4/GCC-15 FTBFS — fix that), then `osc sr … --supersede <declined-id>` (expect the `(new package?)` warning + stricter `opensuse-review-team` review). Or `osc rq revoke` if you don't want to re-add it.
 4. **Stale/obsolete declines** — if the devel-project sources now match Factory (`osc rdiff openSUSE:Factory <pkg> <devel-project> <pkg>` is empty), the decline is moot → `osc rq revoke <id>` to tidy (revoke works on `declined`; see state vocabulary).
+
+**Amending an in-flight Factory/devel submission** (e.g. to add a `boo#` ref after you already submitted): edit the `.changes` entry, commit, then **revoke the stale Factory SR** (`osc request revoke <id> -m "superseding: …"`) and re-submit fresh — don't leave two competing SRs for the same package. (Real: vapoursynth — revoked SR, amended changelog to reference `boo#1268226`, re-forwarded.) Note the home-branch project is auto-removed once its SR is accepted, so re-branch before amending. Use `osc sr --supersede <declined-id>` when resubmitting over a declined/pending request in one step (see specfile-guidelines.md decline handling); use explicit `osc request revoke` + a fresh `sr` when you must amend sources first — both end with exactly one live SR.
 
 ### What human Factory reviewers decline for (mined from ~600 human-declined Factory SRs)
 
@@ -240,7 +244,7 @@ Even with `-m`, `osc sr` prints a confirmation diff and asks `Create this reques
 
 ### Gotchas observed in practice
 
-- **Declined because target was removed upstream.** If you SR a package and the destination has since been removed from Factory, the SR will be declined with a message like *"The package 'openSUSE:Factory/foo' has been removed"*. Before resubmitting, check whether the package still exists at the target with `osc list <target-project> | grep <name>`.
+- **Declined because target was removed upstream.** If you SR a package and the destination has since been removed from Factory, the SR will be declined with a message like *"The package 'openSUSE:Factory/foo' has been removed"*. Before resubmitting, check with `osc develproject <target-project> <pkg>` (404 = removed; see "Verifying the target has the package" above), or `scripts/devel-of.sh` which wraps exactly this.
 - **A devel-project package is not necessarily in Factory — `osc sr` to a missing target is a *new-package* submission.** When `osc sr openSUSE:Factory` prints `Warning: failed to fetch meta data for 'openSUSE:Factory' package '<pkg>' (new package?)`, the package does not exist in Factory yet (confirm with `osc develproject openSUSE:Factory <pkg>` → 404). The SR is still created and valid, but it is treated as a **new package**: it picks up the regular bots *plus* a stricter new-package legal/review pass by `opensuse-review-team`, so expect slower acceptance than an in-place update. Flag this to the user up front — "this package isn't in Factory, so this is a new-package submission" — rather than presenting it as a routine update. (ior was a benchmark devel-project package not present in Factory; SR 1355890 was a new-package submission.)
 - **`osc commit` can race with collaborators.** If someone else's SR is mid-flight when you commit, your commit will produce a divergent revision and any auto-forwarded SR will reflect *yours*, not theirs. Coordinate before pushing if the package has multiple active maintainers.
 - **NonFree subset of arches.** Even with a successful build, `openSUSE:Factory:NonFree` projects often hold a subset of architectures back as `succeeded(unpublished)`. This is policy, not a failure — don't try to fix it by editing the spec.

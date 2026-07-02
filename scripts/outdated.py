@@ -66,26 +66,43 @@ for proj, pkgs in results.items():
     tw = [p for p in pkgs if p.get("repo") == args.repo]
     if not tw:
         continue
+    # Prefer a real 'newest' release; fall back to 'devel' (pre-release) ONLY
+    # when no newest exists, and tag the fallback so triage sees it — the
+    # first-in-list-order pick used to let a preceding rc/beta become the
+    # proposed target version.
     newest = next((p["version"] for p in pkgs
-                   if p.get("status") in ("newest", "devel") and p.get("version")), "?")
+                   if p.get("status") == "newest" and p.get("version")), None)
+    if newest is not None:
+        newest_disp = newest
+    else:
+        dev = next((p["version"] for p in pkgs
+                    if p.get("status") == "devel" and p.get("version")), None)
+        newest, newest_disp = (dev, f"{dev} (devel)") if dev else ("?", "?")
     for p in tw:
         s = p.get("srcname") or p.get("binname") or proj
         if (mine is None or s in mine) and s not in seen:
             seen.add(s)
-            hits.append((s, p.get("version"), newest))
+            hits.append((s, p.get("version"), newest, newest_disp))
 
 # Cross-check against the live reference project to drop Repology-lag false positives.
 def ref_version(pkg):
+    """Returns (status, version): ('ok', v) | ('absent', None) | ('failed', None).
+    A network hiccup / osc failure must NOT be conflated with 'not in project'."""
     try:
-        out = subprocess.run(["osc", "cat", args.project, pkg, f"{pkg}.spec"],
-                             capture_output=True, text=True, timeout=30).stdout
+        r = subprocess.run(["osc", "cat", args.project, pkg, f"{pkg}.spec"],
+                           capture_output=True, text=True, timeout=30)
     except Exception:
-        return None
-    for line in out.splitlines():
+        return ("failed", None)
+    if r.returncode != 0:
+        # 404 (package/file absent) vs any other failure (auth, network, 5xx)
+        if "404" in (r.stderr or ""):
+            return ("absent", None)
+        return ("failed", None)
+    for line in r.stdout.splitlines():
         m = re.match(r"^Version:\s*(\S+)", line)
         if m:
-            return m.group(1)
-    return None  # not in project / no parseable Version
+            return ("ok", m.group(1))
+    return ("absent", None)  # in project but no parseable Version
 
 do_check = (mine is not None) and not args.no_factory_check
 refv = {}
@@ -95,12 +112,12 @@ if do_check and hits:
                         ex.map(ref_version, (h[0] for h in hits))))
 
 candidates, suppressed = [], []
-for s, cur, new in hits:
-    fv = refv.get(s)
-    if do_check and fv is not None and new != "?" and fv == new:
+for s, cur, new, new_disp in hits:
+    status, fv = refv.get(s, (None, None))
+    if do_check and status == "ok" and new != "?" and fv == new:
         suppressed.append((s, fv))          # reference already at newest -> Repology lag
     else:
-        candidates.append((s, cur, new, fv))
+        candidates.append((s, cur, new_disp, status, fv))
 
 shortprj = args.project.split(":")[-1] or args.project
 if do_check:
@@ -109,11 +126,16 @@ if do_check:
 else:
     print(f"# {len(candidates)} outdated candidate(s) — VERIFY each (date, not version string)")
 
-for s, cur, new, fv in sorted(candidates, key=lambda x: x[0].lower()):
+for s, cur, new_disp, status, fv in sorted(candidates, key=lambda x: x[0].lower()):
     extra = ""
     if do_check:
-        extra = f"   (not in {args.project})" if fv is None else (f"   ({shortprj}={fv})" if fv != cur else "")
-    print(f"{s:32} {str(cur):24} -> {new}{extra}")
+        if status == "failed":
+            extra = "   (check failed)"
+        elif status == "absent":
+            extra = f"   (not in {args.project})"
+        elif fv != cur:
+            extra = f"   ({shortprj}={fv})"
+    print(f"{s:32} {str(cur):24} -> {new_disp}{extra}")
 
 if do_check and suppressed:
     print(f"# suppressed (already at newest in {args.project}): "

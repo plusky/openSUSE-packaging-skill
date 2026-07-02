@@ -9,8 +9,13 @@
 # yourself instead — `osc build … 2>&1 | tee /tmp/osc-build.log` — and pass that
 # file as the argument; osc streams the identical log to stdout.
 #
-# Usage: build-summary.sh [repo-arch | logfile]   (default: standard-aarch64)
+# Usage: build-summary.sh [repo-arch | logfile]   (default: standard-aarch64 —
+#   THIS host's local build root; contrast cone-status.sh/rdeps.sh whose remote
+#   default is x86_64, the arch OBS builds everywhere)
 set -uo pipefail
+case "${1:-}" in
+  -h|--help) sed -n '2,14p' "$0"; exit 0;;
+esac
 arg="${1:-standard-aarch64}"
 if [ -f "$arg" ]; then            # a captured/teed log file
   log="$arg"; rpms=""

@@ -16,7 +16,13 @@
 #   e.g. ghc-file-embed/texlive-embedall). Eyeball-filter the obvious noise, or
 #   pass a more distinctive needle when the family name allows it.
 set -uo pipefail
-[ $# -ge 1 ] || { sed -n '2,14p' "$0"; exit 2; }
+case "${1:-}" in
+  -h|--help) sed -n '2,17p' "$0"; exit 0;;
+  '') sed -n '2,17p' "$0"; exit 2;;
+esac
+# arch defaults to x86_64 because OBS builds it on every project — unlike
+# aarch64; the host's aarch64 applies to LOCAL build roots only (see
+# build-summary.sh's standard-aarch64 default). Don't "fix" the mismatch.
 needle="$1"; project="${2:-openSUSE:Factory}"; repo="${3:-standard}"; arch="${4:-x86_64}"
 
 osc api "/build/$project/$repo/$arch/_builddepinfo" 2>/dev/null | python3 -c '

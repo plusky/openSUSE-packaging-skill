@@ -8,18 +8,10 @@ Git packaging workflow (src.opensuse.org / Gitea).
 
 ```
 SKILL.md                     orchestrator — the three-block pipeline + cross-cutting rules
-references/
-  triage.md                  Block 1 — is a package out of date?
-  update-build.md            Block 2 — update → build → clean up (+ FTBFS pitfalls)
-  submit-watch.md            Block 3 — commit → submit → watch → loop back
-  specfile-guidelines.md     per-section spec rules (consulted during Block 2)
-  git-workflow.md            src.opensuse.org clone / fork / PR
-  leap-slfo.md               routing Leap 16.x / SLFO / Backports submissions
-  bugzilla-cve-triage.md     bug-driven entry: triage + close assigned (CVE) bugs
-scripts/                     reusable osc / Repology / bugzilla / distro helpers
-                             (my-packages, my-requests, sr-status, outdated, devel-of,
-                             gpg-verify, build-summary, cone-status, leap-sync,
-                             bug-scan, distro-survey)
+references/                  per-block + domain depth documents, loaded on demand —
+                             see SKILL.md's block pointers for what to load when
+scripts/                     reusable osc / Repology / bugzilla / Gitea / distro helpers —
+                             see SKILL.md "Bundled scripts" for the catalog
 agents/                      forkable delegation playbooks for the three blocks
 ```
 

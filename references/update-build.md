@@ -1,184 +1,46 @@
 # Block 2 — Update, build, clean up
 
+## Pre-flight: is this update already done or in flight? (HARD RULE — do this BEFORE any edit/branch/build)
+
+**Before you `osc branch`, bump a `Version:`, regenerate a vendor tarball, or start a (possibly very expensive) build, confirm you are not redoing work the maintainer already did.** Repology/triage flags "outdated" against *published Tumbleweed*, which lags the devel project — the devel project (and an in-flight SR) may already carry the exact version you're about to package. Run **both** checks against the package's devel project (`osc develproject openSUSE:Factory <pkg>` to find it):
+
+1. **Does the devel project already carry the target version?**
+   ```
+   osc api "/source/<devel>/<pkg>/<pkg>.spec" | grep -m1 '^Version:'
+   osc api "/source/<devel>/<pkg>/<pkg>.changes" | sed -n '1,4p'   # top entry: version + author
+   ```
+2. **Is there already a submit request in flight for it — in *either* direction?** Check both incoming and outgoing:
+   ```
+   osc request list <devel> <pkg>        # lists SRs involving the pkg in that project
+   # outgoing devel -> Factory (this is the one that lands the update):
+   osc api "/request?view=collection&types=submit&states=new,review&project=openSUSE:Factory&package=<pkg>"
+   ```
+   - **Incoming** = someone's `home:…:branches/<pkg> -> <devel>` SR (a maintainer staging the bump into devel — e.g. a `home:favogt:branches…/python-uv -> devel:languages:python` "cleanup" SR). Even if the devel spec doesn't *yet* show the new version, an accepted/open incoming SR means it's already handled.
+   - **Outgoing** = the `<devel> -> openSUSE:Factory` SR that actually delivers the update to Factory.
+
+**Decision matrix:**
+
+| devel has target version? | Factory SR (devel→Factory) exists (new/review)? | Action |
+|---|---|---|
+| yes | yes | **STOP — nothing to do.** The update is already on its way. Report the SR id; do not repackage, do not file a competing SR. |
+| yes | **no** (stranded devel update) | **Don't repackage — just forward it:** confirm green (`osc results <devel> <pkg>`), then `osc sr <devel> <pkg> openSUSE:Factory`. One command, zero packaging. (See triage.md "stranded devel update", real cases openmopac/pspg.) |
+| no | — | Proceed with the normal Block 2 update below. |
+
+If the devel version already matches and you only have *cosmetic* spec-cleaner changes left, do **not** file a cleanup-only SR over an in-flight version SR — it races the version SR and earns a "conflict in file" decline. Hold the cleanup until the version SR lands, or drop it.
+
+**Real case (the rule's origin):** asked to "update python-ruff (0.15.20) and python-uv (0.11.25)", an agent branched both, re-bumped, re-vendored, and ran two heavy native Rust builds — only to discover *afterwards* that both versions were **already committed to devel by the maintainers** (ruff by mimi_vx, uv by mimi_vx + fvogt) **and already submitted to Factory** (SR 1362328 ruff, SR 1362488 uv, both in review). The entire update+build was wasted; the only net delta was a cosmetic cleanup that would have conflicted with the in-flight SRs. A 30-second pre-flight `osc api .../<pkg>.spec | grep Version` + SR check would have caught it before any branch or build.
+
+`scripts/preflight.sh` mechanizes this whole check (exit 0 PROCEED / 3 STOP / 4 FORWARD).
+
 ## Checking a spec file
 
-When the user asks "does this spec follow the guidelines?", "is this spec OK?", "lint this spec", etc., **run `spec-cleaner` first** — it's the canonical openSUSE style checker and applies the same rules the OBS spec-cleaner bot will. Do **not** reach for `rpmlint` for a spec-file lint; rpmlint is the post-build package checker and surfaces a different (and much smaller) set of issues at this stage.
-
-**Canonical invocation — always pass `--remove-groups --pkgconfig --perl --tex`:**
-
-```
-# Show what spec-cleaner would change (preferred — read-only):
-spec-cleaner --remove-groups --pkgconfig --perl --tex -o /tmp/cleaned.spec path/to/foo.spec && diff -u path/to/foo.spec /tmp/cleaned.spec
-
-# Or side-by-side via the user's diff tool:
-spec-cleaner --remove-groups --pkgconfig --perl --tex -d --diff-prog diff path/to/foo.spec
-
-# To apply the cleanup in place (destructive — confirm with the user):
-spec-cleaner --remove-groups --pkgconfig --perl --tex -i path/to/foo.spec
-```
-
-**Always pass `--remove-groups --pkgconfig --perl --tex` on every run** (project policy in this skill):
-- `--remove-groups` strips obsolete `Group:` tags.
-- `--pkgconfig` / `--perl` / `--tex` convert `BuildRequires`/`Requires` to their `pkgconfig(foo)` / `perl(Foo::Bar)` / `tex(foo)` provider forms instead of `foo-devel` / `perl-Foo-Bar` / texlive package names — the preferred modern style (matches what the source comes from and lets the resolver pick the right provider).
-
-Useful flags:
-- `--remove-groups` — strip `Group:` tags (**always pass**).
-- `-p` / `--pkgconfig` — convert deps to `pkgconfig(...)` (**always pass**). NOTE: `-p` is *pkgconfig*, **not** perl. **Whenever a spec has any `pkgconfig(...)` dependency, make sure `BuildRequires: pkgconfig` is also present** — pkg-config is needed at build time, and although it's usually pulled in transitively, it must be declared explicitly. spec-cleaner injects it automatically when it adds `pkgconfig(...)` deps; if you add `pkgconfig(...)` deps by hand, add `BuildRequires: pkgconfig` yourself, and verify it's there after any cleanup.
-  - **`--pkgconfig` can *over-expand* one `-devel` into several `pkgconfig()`** — it maps a `-devel` to **every** `.pc` that package ships (e.g. `libevent-devel` → `pkgconfig(libevent)` + `libevent_core` + `libevent_extra` + `libevent_openssl` + `libevent_pthreads`; `libunwind-devel` → 5 variants; `libopenssl-devel` → `libcrypto`+`libssl`+`libopenssl`+`openssl`). That's noisy. It's safe to **trim to the one principal `pkgconfig()`** per dependency (e.g. just `pkgconfig(libevent)`, `pkgconfig(libunwind)`, `pkgconfig(libcrypto)`+`pkgconfig(libssl)`): the kept dep still pulls the **same `-devel`**, which provides *all* its `.pc` files, so the buildroot — and the build — are unchanged. The trimmed form is **spec-cleaner-stable** (it only re-expands `-devel` *names*, not existing `pkgconfig()` deps, so a no-diff run confirms it). Validate with a rebuild after trimming (the linker pulling the expected libs is the proof). Real case: monero — trimmed ~20 expanded `pkgconfig()` back to 9 principals, built identically. **A nastier variant — version constraint copied onto an independently-versioned sub-`.pc`:** when the `-devel` carried a `>= X.Y`, spec-cleaner copies that constraint onto *every* expanded `pkgconfig()`, including sub-libraries that version on their own scheme. `libxslt-devel >= 1.1.9` → `pkgconfig(libxslt) >= 1.1.9` **+ `pkgconfig(libexslt) >= 1.1.9`**, but `libexslt.pc` is `0.8.x`, so the build dies in dep-resolution: *"nothing provides pkgconfig(libexslt) >= 1.1.9 (got 0.8.25)"*. Drop the bogus constraint on the sub-`.pc` (keep `pkgconfig(libexslt)` unversioned) — the version belongs only on the principal `.pc`. (Real case: xmlstarlet.)
-    - **When the several `.pc` are *semantically distinct* (not just split variants of one lib), pick the right one by how the source uses it — don't blind-trim to "principal."** Some `-devel` ship genuinely different APIs under different `.pc` names, where keeping the wrong one is a real (if currently-harmless) mismatch. The classic is **`libbsd-devel` → `pkgconfig(libbsd)` + `pkgconfig(libbsd-overlay)`**: `libbsd` exposes its functions under a `bsd/` header prefix (`#include <bsd/string.h>`), while `libbsd-overlay` adds `-I.../libbsd` so the *unprefixed* system headers gain the BSD functions (`#include <string.h>` → `strlcpy`). Grep the source for the include style — prefixed `bsd/…` includes → keep `pkgconfig(libbsd)`; unprefixed includes relying on the overlay → keep `pkgconfig(libbsd-overlay)`. (Real case: libdispatch 6.1.1 uses `check_symbol_exists(__printflike "bsd/sys/cdefs.h")` — the `bsd/` prefix → `pkgconfig(libbsd)`, dropping the over-expanded `-overlay`.)
-  - **More over-expansion footguns spec-cleaner commits — REJECT these and keep the package-name form (accepted no-diff deviations):**
-    - **`--perl` explodes any package that *provides* perl modules into the full list of those modules** — `autoconf`/`automake` → dozens of `perl(Autom4te::…)`/`perl(Automake::…)`, and `git-core` → ~20 `perl(Git)`/`perl(Git::SVN::…)` lines. Keep the literal package name (`autoconf`, `automake`, `git-core`) — it's the canonical dependency; the giant perl-module list is wrong (and `git-core` for a Go package like `gh` is plainly a tool dep, not a perl one). (Real cases: xar (autoconf/automake), gh (git-core).)
-    - **`--pkgconfig` rewrites `python3-devel` into hardcoded versioned `pkgconfig(python-3.6)` + `pkgconfig(python-3.6m)`** (stale numbers baked from spec-cleaner's data — non-portable; current Python is 3.11+). Keep `python3-devel`. (Real case: molequeue.)
-    - **`--pkgconfig` mis-converts a package-name `Provides:`/`Obsoletes:` that merely *looks* like a lib** — e.g. a legacy compat `Provides: libmopac7-1-devel` → `pkgconfig(libmopac7)`. That changes the semantics (a package-name provide is not a pkgconfig provider). Keep the original `Provides:` string. (Real case: openmopac.)
-    - **`--pkgconfig` rewrites `uthash-devel` → `pkgconfig(uthash)`, which does not resolve** — openSUSE's `uthash-devel` ships no `uthash.pc`, so the converted dep is unresolvable (`nothing provides pkgconfig(uthash)`) and the build dies at dep-resolution. Keep `uthash-devel` and leave a one-line comment so the next person doesn't "fix" it back. (Real case: falco-libs.) General rule: a `pkgconfig(foo)` conversion is only safe if `foo.pc` actually exists — when in doubt, `rpm -ql <pkg>-devel | grep '\.pc$'` before trusting the rewrite.
-    In all four the spec is **not** no-diff (spec-cleaner re-suggests the expansion every run) — that's an accepted deviation; verify the *rest* of the diff is empty and move on.
-- `--perl` — convert deps to `perl(...)` (**always pass**; long option only, no short form).
-- `-t` / `--tex` — convert deps to `tex(...)` (**always pass**).
-- `-c` / `--cmake` — convert deps to `cmake(...)` (pass when the package is CMake-based and uses `cmake()`-style deps).
-- `-i` — inline edit (modifies the file)
-- `-d` — diff against original (default diff tool is `vimdiff`; override with `--diff-prog`)
-- `-o FILE` — write the cleaned output to FILE
-- `--copyright-year YYYY` — set the copyright year in the regenerated header
-- `--suse-copyright` — use the official SUSE copyright header text
-- `-m` / `--minimal` — only touch the copyright; leave everything else alone
-
-Operational notes:
-- spec-cleaner prints **nothing on success**. Silence + empty diff = the spec is already canonical. Don't keep poking it expecting an "OK".
-- Always snapshot before running `-i` (`cp foo.spec /tmp/foo.spec.before`) so you can `diff -u` afterwards and show the user what changed.
-- It only rewrites *style and mechanically-fixable bugs*. It will **not** flag a wrong `License:` SPDX choice, a missing `%check` section, or language-policy violations (Python flavour macros, shlib package naming, etc.) — those require the human review further below.
-- A spec can opt out of automatic cleanup by including `#nospeccleaner` somewhere in the file.
-- `spec-cleaner -o <file>` refuses to overwrite an existing output file (errors with `ERROR: <file> already exists.`). When iterating on a cleanup, either `rm -f /tmp/cleaned.spec &&` before each run or use a fresh path each time.
-- **A conditional dependency written as a standalone macro line — `%{?with_foo:BuildRequires:  foo}` — gets *hoisted to the top of the preamble*, above the `%bcond`/`%define` that defines `with_foo`.** spec-cleaner treats any line starting with a bare `%{...}` as a preamble define and moves it up with the other defines, which silently **breaks the conditional** (the macro is now evaluated before it's defined). This is a case where blindly applying spec-cleaner's output is wrong. The fix that is both correct *and* spec-cleaner-stable: rewrite the one-liner as a real conditional block —
-  ```
-  %if %{with foo}
-  BuildRequires:  foo
-  %endif
-  ```
-  spec-cleaner leaves `%if`-guarded `BuildRequires` in place (it only *relocates* the block to the **end of the dependency block**, after the last `Requires`/`Provides`/`Recommends`/`Suggests` — put it there yourself to reach a no-diff state in one pass). `%{with foo}` evaluates to 0 when `with_foo` is undefined, so this form is safe whether or not the `%bcond` ran. The `%{?with_foo:...}` form inside `%build`/`%check` (not the preamble) is left alone and can stay. Real case: the whole zathura/girara stack used `%{?with_gcc15:BuildRequires:  gcc15}`; converting each to the `%if %{with gcc15}` block was the only way to get a clean spec-cleaner pass without breaking the Leap-16.0 gcc15 path.
-
-### Reference: what spec-cleaner mechanically rewrites
-
-This list is spec-cleaner's *mechanical scope* (what it auto-applies); the *why* and the authoring rules it can't enforce live in `references/specfile-guidelines.md`. The two overlap in subject deliberately — when a rule here also carries policy/rationale, keep the rationale in specfile-guidelines and the "spec-cleaner does this automatically" fact here, rather than restating both.
-
-Derived from the project's own [test fixtures](https://github.com/rpm-software-management/spec-cleaner/tree/master/tests) (`tests/in/foo.spec` → `tests/out/foo.spec`). When you spot any of these in a spec, expect spec-cleaner to rewrite it — don't fix it by hand first, and don't be surprised when the diff is large.
-
-**Layout / whitespace**
-- Tag values aligned to column 16 (`Name:` then 11 spaces then value).
-- Tag name canonicalised: `Url:` → `URL:`, `LICense:`/`license:` → `License:`, `Buildrequires:` → `BuildRequires:`, lowercase `source:` → `Source:`.
-- Trailing whitespace stripped; consecutive blank lines collapsed to one.
-- `%changelog` line appended at EOF if absent.
-- Bare macros curlified: `%name` → `%{name}`, `%version` → `%{version}`, `%libname` → `%{libname}`, `%kde4_runtime_requires` (on its own line) → `%{kde4_runtime_requires}`, positional `%1` → `%{1}`. A whitelist of scriptlet macros (`%insserv_cleanup`, `%service_add_pre`, `%sysusers_requires`, …) is intentionally **not** curlified.
-
-**Obsolete / forbidden constructs**
-- `%clean` section removed entirely.
-- `BuildRoot:` lines removed (including gated `%if 0%{?suse_version} < 1230 … %endif` blocks around them).
-- Default `%defattr(-,root,root)` / `%defattr(-,root,root,-)` removed; non-default `%defattr(644,…)` preserved.
-- `BuildPreReq:` → `BuildRequires:` (BuildPreReq deprecated).
-- `pkg-config` → `pkgconfig` (package renamed; applies both to direct deps and `pkgconfig(...)` requirements).
-- `egrep` → `grep -E`, `fgrep` → `grep -F`.
-- Every `PreReq:` line gets a `# FIXME: use proper Requires(pre/post/preun/...)` comment above it.
-- Legacy ppc64-only `%ifarch ppc64` + `Obsoletes: libcap-64bit`-style blocks removed.
-
-**Macros**
-- `%makeinstall`, `make install DESTDIR=%{buildroot}`, `make install DESTDIR=$RPM_BUILD_ROOT`, `DESTDIR=%{buildroot} make install`, and every `-jN` variant → `%make_install`.
-- In `%check`: `make ... check/test` (any verbosity / `-j` flags) → `%make_build ... check/test`. Bare `V=1` removed (the macro handles verbosity).
-- `$RPM_BUILD_ROOT` → `%{buildroot}` (exact-token match — `$RPM_BUILD_ROOT_REPLACEMENT` left alone).
-- `%{S:N}` → `%{SOURCEN}` (canonical Source reference).
-- Deprecated `%suse_update_config -f` etc. removed.
-- Bare `cmake .` / `./configure` / `qmake-qt5` / `meson` get a `# FIXME: you should use the %%cmake/%%configure/%%qmake5/%%meson macro` comment above them.
-- Every variation of `*.la` removal collapses to: `find %{buildroot} -type f -name "*.la" -delete -print`.
-
-**Paths → macros** (applied throughout `%files`, `%install`, etc.)
-
-| Bare path | Replaced with |
-|---|---|
-| `/usr/bin` | `%{_bindir}` |
-| `/usr/sbin`, `%{_prefix}/sbin` | `%{_sbindir}` |
-| `/usr/lib64`, `/usr/lib` | `%{_libdir}` |
-| `/usr/libexec` | `%{_libexecdir}` |
-| `/usr/include` | `%{_includedir}` |
-| `/usr/share` | `%{_datadir}` |
-| `/usr/share/man` | `%{_mandir}` |
-| `/usr/share/info` | `%{_infodir}` |
-| `/usr/share/doc/packages` | `%{_docdir}` |
-| `/var`, `/var/adm/…` | `%{_localstatedir}`, `%{_localstatedir}/adm/…` |
-| `/etc/init.d` | `%{_initddir}` |
-| `/usr` (alone), `%_exec_prefix` | `%{_prefix}` |
-
-**Licenses**
-- SPDX legacy → modern: `GPL-2.0` → `GPL-2.0-only`, `GPL-2.0+` → `GPL-2.0-or-later`, `LGPL-2.1+` → `LGPL-2.1-or-later`, etc. The `+` suffix is dropped in favour of `-or-later`; bare names get the `-only` suffix.
-- Fedora-style prose: `GPLv2 or later` → `GPL-2.0-or-later`.
-- Operator case normalised: lowercase `and` / `or` / `with` → uppercase `AND` / `OR` / `WITH`.
-- Separators normalised: `;` between licenses → `AND`; trailing `;` stripped.
-- Subpackages missing a `License:` tag inherit the main package's license explicitly.
-- Files matching `COPYING*`, `LICEN[SC]E*`, `*license*` move automatically from `%doc` to `%license`.
-
-**Sources / Patches**
-- All `Source*` / `Patch*` tags sorted by number, aligned to column 16.
-- `Source:` / `Patch:` (no number) → `Source0:` / `Patch0:`.
-- `NoSource:` lines grouped after all `Source` tags.
-- `%patchN -p1` → `%patch -P N -p1` (the bare-numeric form is deprecated in modern rpm).
-- `%setup -q -n %{name}-%{version}` → `%setup -q` (default `-n` value elided); non-default `-n` (e.g. `-n %{name}-%{version}-src`) preserved.
-- `http://` → `https://` for known SSL-capable hosts (PyPI, GNU FTP, Python.org, github.com, google.com, …).
-- `http://pypi.python.org/packages/source/…` → `https://files.pythonhosted.org/packages/source/…`.
-  - **BUT spec-cleaner CORRUPTS a full-hash pythonhosted URL — verify the `Source` after running it.** If a spec pins the per-file hashed path `…/packages/b5/e7/<64-hex>/inspektor-%{version}.tar.gz`, spec-cleaner rewrites it to a **malformed** `…/packages/b5/i/inspektor/inspektor-%{version}.tar.gz` (it keeps the first 2-char hash segment but drops the rest), which 404s. The fix is to use the canonical **redirect** form `https://files.pythonhosted.org/packages/source/<first-letter>/<pkg>/<pkg>-%{version}.tar.gz` — it is version-templated (so it survives the *next* bump too, unlike a hash path you'd have to re-edit every release) and spec-cleaner leaves it alone. (Real case: python-inspektor 0.5.3 — spec-cleaner mangled the hash URL to `b5/i/inspektor`; switched to `source/i/inspektor`.)
-- Inline known `%define`s in URLs where it improves readability (e.g. `%{modname}` → `idna`).
-
-**Dependencies** (`BuildRequires` / `Requires` / `Conflicts` / `Provides` / `Obsoletes` / `Supplements` / `Recommends` / `Suggests` / `Enhances`)
-- Multi-package one-liners (space- or comma-separated) split into one package per line.
-- Sorted alphabetically within each tag, with non-bracket deps before bracket deps (`pkgconfig(...)`, `cmake(...)`, `perl(...)`, `rubygem(...)`).
-- Identical dep lines de-duplicated (with attached comment context preserved).
-- When any `pkgconfig(...)` appears, an explicit `BuildRequires: pkgconfig` is injected (to ensure the `Requires: pkgconfig` runtime dep is generated).
-- Whitespace around operators normalised: `iii  <=     4.2.1` → `iii <= 4.2.1`.
-- Invalid RPM operators corrected: `=>` → `>=`, `==` → `=`.
-- Known package renames applied: `gtk2-devel` → `pkgconfig(gtk+-2.0)` (and friends), `zlib-devel` → `pkgconfig(zlib)`, `pwdutils` → `shadow`.
-- Modern boolean deps: `packageand(A:B)` → `(A and B)`.
-- `Requires(post): a b c` → three separate `Requires(post):` lines.
-- With `-p` flag: `perl-Foo-Bar` → `perl(Foo::Bar)`.
-
-**Preamble layout**
-- Tag order normalised within a (sub)package block: `Name`, `Version`, `Release`, `Summary`, `License`, `Group`, `URL`, `Source*`, `Patch*`, `BuildRequires*`, `Requires*`, `Conflicts*`, `Provides*`, `Obsoletes*`, `Supplements`, `Enhances`, `Recommends`, `Suggests`, etc.
-- `Release: <number>` always rewritten to `Release: 0` (OBS sets the real release); string-form releases like `2.2donotclean` preserved.
-- `ExcludeArch` / `ExclusiveArch` lifted out of conditional blocks to a fixed top-of-preamble position.
-- `Group:` values not on the [approved list](https://en.opensuse.org/openSUSE:Package_group_guidelines) get a `# FIXME: use correct group or remove it…` comment. With `--remove-groups` (the default in this skill — see Core directive), the line is stripped entirely instead.
-- `%package -n foo-lang` / `%package lang` gets a `# FIXME: consider using %%lang_package macro` comment.
-
-**Files section**
-- `/path` → `%{macro}/...` per the paths table above.
-- Manpage `.gz` and info `.info.gz` suffixes replaced with `%{?ext_man}` / `%{?ext_info}` (compression suffix is OS-dependent; the variable handles it).
-
-**Scriptlets**
-- Single-command `%post` / `%postun` running only `/sbin/ldconfig` collapsed to one-liner `%post -p /sbin/ldconfig`.
-- `%{run_ldconfig}` → `-p /sbin/ldconfig`.
-- Trailing whitespace stripped on scriptlet header lines.
-
-**Python-specific** (always-on, no `-p`)
-- Inside `%python_expand` (and `%{python_expand …}` block forms): `%{python_sitelib}` / `%{python_sitearch}` / `%{python_version}` / `%{python_bin_suffix}` rewritten to the `$python_*` flavour-variable form `%{$python_sitelib}` etc., and bare `python` → `$python`. These forms expand once per flavour during build.
-- Bare `%oldpython-base` → `%{oldpython}-base`.
-- `Source0: http://pypi.python.org/packages/source/...` → `https://files.pythonhosted.org/packages/source/...`.
-- `%{python_sitelib}/*` glob in `%files` expanded to the canonical pair: `%{python_sitelib}/<modulename>` + `%{python_sitelib}/<modulename>-%{version}*-info`.
-
-**Header / copyright** (with `--suse-copyright`)
-- Multiple/garbled copyright lines collapsed to one canonical `Copyright (c) YYYY SUSE LLC and contributors` line plus separately-attributed third-party lines.
-- `http://bugs.opensuse.org/` → `https://bugs.opensuse.org/`.
-- OBS service hint lines (`# norootforbuild`, `# icecream`, `# needsbinariesforbuild`, `# needsrootforbuild`, `# needssslcertforbuild`, `# nodebuginfo`, `# rootforbuild`) alphabetised and de-duplicated.
+spec-cleaner invocation, always-pass flags (`--remove-groups --pkgconfig --perl --tex`), the documented over-expansion deviations, and the mechanical-rewrite catalog now live in `references/spec-cleaner.md`.
 
 ## Local builds (`osc build`)
 
 - **HARD RULE: investigate builds locally by default; reach for the *remote* build (`osc rbl`/`osc results`/`br.opensuse.org`) only in the specific cases where local is impossible or irrelevant.** When a build fails or you need to read a build log, the first move is the *local* artefacts — the preserved build root at `/var/tmp/build-root/<repo>-<arch>/` and its saved log `/var/tmp/build-root/<repo>-<arch>/.build.log` (read it directly — **no sudo**; `scripts/build-summary.sh [repo-arch]` extracts the result, `%check`/ctest pass count, rpmlint badness + every E:/W: line, and the produced RPMs in one go. If a restricted profile ever blocks reading under `/var/tmp/build-root`, capture the build yourself — `osc build … 2>&1 | tee /tmp/osc-build.log` — and pass that file to the script; osc streams the identical log to stdout. See the rpmlint and `osc chroot` rules below). You already have the full log and a debugger-friendly root on disk from the build you just ran — querying the server for the same information is slower, depends on the server having scheduled/finished your commit, and reflects a *different* environment than the one you reproduced in. So diagnose, grep for errors, bisect compiler-flag hypotheses, and rerun failing tests **in the local root**, not over the wire. The remote build is the right tool only when: (a) the failure is *arch-specific* and you can't build that arch locally (e.g. a foreign arch needing an x86_64 host, or an arch your machine lacks — see the emulation notes below); (b) the user explicitly asks you to check/monitor the server-side build, or there is a concrete reason to (e.g. diagnosing a failure that reproduces *only* on OBS, not locally); or (c) you genuinely have no local checkout/build to inspect (triaging someone else's pasted failure URL). Outside those, prefer local every time — don't poll `osc rbl` for something sitting in `.build.log` on your own disk.
 - **Monitoring server-side builds is NOT a default step — never poll `osc results`/`osc rbl` on your own initiative after a commit or SR.** Once the local `osc build` + `source_validator` are green you commit and (for Factory) file the SR immediately; the server rebuild is the bots'/maintainers' concern, not something to babysit. Watch the remote matrix only when the user asks, or when you have a specific reason to (a suspected OBS-only failure, an arch you couldn't build locally). This matches the "file the SR immediately, don't poll `osc results`" rule under Submit requests. Reporting "committed/submitted" is a complete outcome — don't append speculative remote-status checks.
 
-### Unattended / remote-build mode (the sanctioned exception to "build locally by default")
-
-The two hard rules above assume an interactive session where a single local `osc build` is the fastest path to a verdict. **When the build/test block runs *unattended* (an autonomous agent run, a `/loop`, a multi-package cone where serial local builds would take hours), invert the default: drive the build through OBS remotely instead.** Local `osc build` is serial (one VM at a time) and blocks the session; OBS builds everything in parallel and re-triggers dependents automatically. The flow:
-
-1. **HARD RULE: branch the package into your home project first — *always*, including packages you maintain — never build/commit in the devel project directly.** Holding maintainer rights on the devel package is **not** a licence to iterate in place: branch it anyway, so every remote build and commit happens on your throwaway copy and the shared devel project only ever sees the finished, green result via an SR. `osc branch <devel-project> <pkg>` creates `home:<you>:branches:<devel-project>/<pkg>` (or branch into a dedicated scratch `home:<you>:<topic>` for a whole cone — `osc meta prj -e` it with an `openSUSE_Factory` repo, path `openSUSE:Factory/standard`, arch `x86_64`). For a brand-new package there's nothing to branch — create it in the home project (see the new-package flow in `references/submit-watch.md`). Branching keeps all the iteration off the shared devel project until it's proven good. (The only time you commit straight into a project is the dedicated scratch `home:` project you created for the cone — that *is* your branch.)
-2. **Apply the change in the branch, `osc commit`, and let OBS build it.** Skip the local `osc build` for the bulk verification; the server is now the build. (You may still do a quick local build of one stubborn package to iterate fast, but the cone as a whole builds remotely.)
-3. **Monitor with `scripts/cone-status.sh <home-prj> [repo] [arch]`** — it prints a `code → package` table for the whole project in one call and sets a loopable exit code (`0` all green, `1` still in flight / dirty, `2` a *settled* failure), so you can `until scripts/cone-status.sh …; do sleep 30; done` instead of hand-parsing `osc results`. It deliberately won't report a failure while anything is still building or the result is `dirty` — encoding the stale-`F`-while-rebuilding lesson (a `failed` code on a package whose `_status` is `dirty="true"`/`scheduled` is a pending rebuild, not a real failure). Then **read `osc rbl <home-prj> <pkg> <repo> <arch>` for *every* package — the failed ones to fix, and the green ones for sub-threshold rpmlint findings / missed deps** (see the "read the successful builds' logs too" rule in `references/specfile-guidelines.md`). Manual decode if you need it: `.`=ok, `F`=failed, `U`=unresolvable (dep not published yet — transient right after committing its dependency), `B`=broken (often "no source uploaded" = staged but never `osc ci`'d).
-4. **Gate the SR on the whole branch being green** — every package, every arch the repo enables (incl. `i586`), every `:test`/multibuild flavor — **plus** `source_validator`. Only then submit to the devel project.
-5. **SR home→devel, then accept and forward to Factory.** `osc sr <home-prj>/<pkg> <devel-project>` (noting the maintainer wish if the user asked); when you hold the rights, **`osc request accept <id> -m "…"`** lands it in the devel project, then file the Factory SR **explicitly** with `osc sr <devel-project> <pkg> openSUSE:Factory`. (osc offers an *interactive* "Forward this submit to it?" prompt after accept, but there is **no `--forward` flag** and the prompt can't be answered non-interactively — so always do the second `osc sr` yourself. See `references/submit-watch.md` for details and the non-maintainer case where devel-project maintainers do the accepting.)
-
-This mode is *opt-in for unattended runs*; in a normal interactive session the local-build default still applies.
 - **Before working on an *already-checked-out* package, run `osc up` first to sync it with OBS.** A pre-existing `.osc/` working copy (one you did not just `osc co` this turn) can be behind the server — commits from collaborators, bots, or a previous session — so editing/building/diffing against a stale base risks a clash or silently reverting server-side changes at commit. Do it automatically on reuse; a fresh `osc co` is already current so it doesn't need it. (For a whole tree, `osc up` at each project-level checkout updates all the packages within it.)
 - Default target architecture is the host's native arch (`uname -m`). Do not pick a non-native arch unless the user explicitly requests it — emulation through qemu-user is dramatically slower (observed: 19s native aarch64 vs ~240s emulated x86_64 for the same trivial package).
 - If the chosen repo does not publish the native arch (e.g. `openSUSE_Tumbleweed` has no aarch64 in `osc repos`), prefer another repo that does (`openSUSE_Factory`, `16.0`, `15.6`, …) rather than building emulated.
@@ -199,13 +61,7 @@ This mode is *opt-in for unattended runs*; in a normal interactive session the l
   ```
   For a multi-subpackage build, run once per subpackage RPM in the same dir (each has its own `.rpm`).
 - **Not every rpmlint `E:` is actionable — weigh it against what the package *does*.** A package that compiles software *at runtime* (e.g. kcbench, which builds a Linux kernel to benchmark the machine) legitimately `Requires:` `*-devel` packages (`libelf-devel`, `openssl-devel`), which trips `E: devel-dependency` and `E: explicit-lib-dependency`. Those are false positives here — the headers really are needed at run time — and rpmlint scores them at **badness 1 each**, far below the 999 abort threshold, so the build still passes. Don't "fix" a correct dependency to silence rpmlint; confirm the badness total stays under threshold and move on. (Contrast with the relative-RPATH error, badness 10000, which *must* be fixed.)
-- **List a user's maintained packages in a project with the owner-search API:** `osc api '/search/owner?project=<prj>&filter=maintainer&user=<user>'` returns `<owner package=…/>` elements. Use it before working a devel project to know which packages are actually yours. An `<owner>` element with **no** `package=` attribute means the user is a **project-level** maintainer (inherits all packages in that project); elements **with** `package=` are explicit package-level maintainerships.
-  - **`osc whois` first — the OBS username is not the local login.** The owner search's `user=` wants the OBS account name often differs from `$USER` and the email local-part. A wrong `user=` silently returns an empty `<collection/>`, which looks like "you maintain nothing" rather than an error. Confirm with `osc whois` before trusting an empty result.
-  - **URL-encode `+` in project/package names as `%2B`.** A query against `devel:libraries:c_c++` written literally sends `c_c++`, and the server decodes `+`→space, yielding `devel:libraries:c_c` → `404 Project not found`. Use `devel:libraries:c_c%2B%2B`. (Same trap in any `osc api` query string, `/search/owner`, `/staging/...`, etc.)
-- **`/search/owner?project=openSUSE:Factory&...` returns nothing for devel-level maintainers** — Factory maintainership is resolved through the *devel project*, and the owner index does not surface that as a Factory owner. To enumerate *all* packages a user maintains (across every project), query the person index instead:
-  - Package-level: `osc api "/search/package?match=person/@userid='<user>'"` → every `<package project=… name=…/>` where the user is listed as a person. Filter out `home:*`, `openSUSE:Maintenance:*`, and `*:branches:*` noise to get the real working set.
-  - Project-level: `osc api "/search/project?match=person/@userid='<user>'"` → projects where the user is a *project* maintainer (so they own every package there). (Grepping the XML for `name="…"` also matches `<repository name=…>`, so parse `<project>` elements, not raw `name=`.)
-  The global `/search/owner?user=<user>&filter=maintainer` (no project) returns 0 owners — it is not a substitute. Map a devel package to its Factory presence with `osc develproject openSUSE:Factory <pkg>` (it returns `<devel-project>/<pkg>`; 404 = not in Factory).
+- Maintainer/owner enumeration queries (owner-search API, `osc whois` caveat, `%2B` encoding, person-index queries): see `references/triage.md`.
 - **`python-bytecode-inconsistent-mtime` rpmlint errors are usually a *local-build-only* artifact, not a package defect.** A package that doesn't yet exist on the server has no release number locally, so `osc build` can't set `SOURCE_DATE_EPOCH` (the log warns `could not set SOURCE_DATE_EPOCH, ensure BUILD_RELEASE is set` and `SOURCE_DATE_EPOCH is not set: skipping … normalization`); without it the installed `.py` mtimes and the byte-compiled `.pyc` embedded timestamps drift by a second or two → 16 spurious `python-bytecode-inconsistent-mtime` errors. The server sets it from the changelog date, so they don't appear there. To reproduce server conditions locally, build with **`osc build --release 1 …`** (sets `BUILD_RELEASE` → `SOURCE_DATE_EPOCH`); the errors vanish, confirming they were the artifact. (Real case: a new `uv_build`-backend Python package on IBS.)
 - **New `uv_build` Python backend** (`pyproject.toml` `build-backend = "uv_build"`): add `BuildRequires: %{python_module uv-build}` (the buildroot needs the backend for `%pyproject_wheel`'s `--no-build-isolation`). `python-uv-build` is in Factory but **not in Leap 16.0/SLE15** yet, so such a package is currently Tumbleweed-only there. Also: `%pyproject_check_import` may not exist in an older Factory snapshot's `python-rpm-macros` (it expands literally and fails `%check` with `fg: no job control`) — fall back to a manual import test `%python_expand PYTHONPATH=%{buildroot}%{$python_sitelib} $python -c "import <module>"` (note: the interpreter inside `%python_expand` is the shell var `$python`, **not** a `%{$python_exec}` macro). For a Python ≥ 3.13-only package, pin `%define pythons python313` so the singlespec doesn't try (and fail to resolve) the python311 flavor.
 - **For a *native* (arch) Python package, use `%pytest_arch` in `%check`, not `%pytest`.** `%pytest` sets `PYTHONPATH` to the buildroot's `sitelib`, but a compiled C/Cython extension installs into `sitearch` — so a test that `import`s the module fails at collection with `ModuleNotFoundError: No module named '<mod>'` and aborts `%check`. `%pytest_arch` points `PYTHONPATH` at the installed `sitearch` where the `.so` lives. (Symmetry: `%pytest` for noarch/pure-python, `%pytest_arch` for packages that build a native extension and ship `BuildArch`-less / sitearch files.) Real case: `python-siphash24` — a meson-python Cython extension; `%pytest test.py` failed to import `siphash24` until switched to `%pytest_arch test.py` (then 13 tests passed). The same sitearch-vs-sitelib distinction applies to a manual import test and to the `%files` globs (`%{python_sitearch}/…` for the `.so` + dist-info).
@@ -215,6 +71,31 @@ This mode is *opt-in for unattended runs*; in a normal interactive session the l
   - **Run `osc co <prj> <pkg>` from the *parent* directory (the one that will contain `<prj>/`), not from inside an existing `<prj>/` checkout** — doing it from inside creates a nested `<prj>/<prj>/<pkg>`. (Real case: re-checking-out hardware packages from inside `hardware/` produced `hardware/hardware/fwts`.)
   - **A half-finished checkout that `osc up` greets with "Please run 'osc repairwc .'" is usually fastest fixed by `rm -rf <pkg>` + a fresh `osc co <prj> <pkg>`, not by repairing in place.** `osc repairwc` followed by `osc up` can re-hit `resuming broken update… PackageFileConflict: failed to add file '<f>' … already exists` and stay stuck; for an obs_scm/link package with no local edits, deleting and re-fetching is clean. (Real case: several `hardware` packages left mid-update by an interrupted checkout — `rm -rf` + `osc co` recovered each.)
 - **`pgrep -f` / `pkill -f "<pattern>"` self-matches the very command running it**, because the pattern string is in that process's own argv — so it reports a phantom "still running" or kills its own shell (exit 144). To check for a real process, match the binary path with the bracket trick (`ps -eo pid,cmd | grep '[/]usr/bin/osc'`) or exclude self (`pgrep -f pat | grep -v $$`); never `pkill -f` a literal you also typed on the command line.
+
+## Unattended / remote-build mode (the sanctioned exception to "build locally by default")
+
+The two hard rules above assume an interactive session where a single local `osc build` is the fastest path to a verdict. **When the build/test block runs *unattended* (an autonomous agent run, a `/loop`, a multi-package cone where serial local builds would take hours), invert the default: drive the build through OBS remotely instead.** Local `osc build` is serial (one VM at a time) and blocks the session; OBS builds everything in parallel and re-triggers dependents automatically. The flow:
+
+1. **HARD RULE: branch the package into your home project first — *always*, including packages you maintain — never build/commit in the devel project directly.** Holding maintainer rights on the devel package is **not** a licence to iterate in place: branch it anyway, so every remote build and commit happens on your throwaway copy and the shared devel project only ever sees the finished, green result via an SR. `osc branch <devel-project> <pkg>` creates `home:<you>:branches:<devel-project>/<pkg>` (or branch into a dedicated scratch `home:<you>:<topic>` for a whole cone — `osc meta prj -e` it with an `openSUSE_Factory` repo, path `openSUSE:Factory/standard`, arch `x86_64`). For a brand-new package there's nothing to branch — create it in the home project (see the new-package flow in `references/submit-watch.md`). Branching keeps all the iteration off the shared devel project until it's proven good. (The only time you commit straight into a project is the dedicated scratch `home:` project you created for the cone — that *is* your branch.)
+2. **Apply the change in the branch, `osc commit`, and let OBS build it.** Skip the local `osc build` for the bulk verification; the server is now the build. (You may still do a quick local build of one stubborn package to iterate fast, but the cone as a whole builds remotely.)
+3. **Monitor with `scripts/cone-status.sh <home-prj> [repo] [arch]`** — it prints a `code → package` table for the whole project in one call and sets a loopable exit code (`0` all green, `1` still in flight / dirty, `2` a *settled* failure), so you can `until scripts/cone-status.sh …; do sleep 30; done` instead of hand-parsing `osc results`. It deliberately won't report a failure while anything is still building or the result is `dirty` — encoding the stale-`F`-while-rebuilding lesson (a `failed` code on a package whose `_status` is `dirty="true"`/`scheduled` is a pending rebuild, not a real failure). Then **read `osc rbl <home-prj> <pkg> <repo> <arch>` for *every* package — the failed ones to fix, and the green ones for sub-threshold rpmlint findings / missed deps** (see the "read the successful builds' logs too" rule below). Manual decode if you need it: `.`=ok, `F`=failed, `U`=unresolvable (dep not published yet — transient right after committing its dependency), `B`=broken (often "no source uploaded" = staged but never `osc ci`'d).
+4. **Gate the SR on the whole branch being green** — every package, every arch the repo enables (incl. `i586`), every `:test`/multibuild flavor — **plus** `source_validator`. Only then submit to the devel project.
+5. **Submission (SR home→devel, accept, explicit Factory forward — there is no `--forward` flag) is Block 3** — see `references/submit-watch.md` "Accept-and-forward"; hand the green branch to the orchestrator.
+
+This mode is *opt-in for unattended runs*; in a normal interactive session the local-build default still applies.
+
+### Packaging a multi-package stack (a new dep cone) — build in a home: project, in parallel
+
+When a new package drags in a chain of unpackaged deps (e.g. a Python app needing 10+ new modules), **do not build them one-at-a-time with local `osc build`** — local builds are serial (one VM at a time) and you'll wait hours. Instead create a scratch project (`osc meta prj -e home:<user>:<stack>`, add an `openSUSE_Factory` repo with path `openSUSE:Factory/standard`, arch `x86_64`) and **commit each prepped package into it**; OBS schedules them all in parallel and re-triggers dependents automatically as each leaf publishes. Workflow:
+- **Determine build order leaves-first** but you don't have to wait between commits — commit everything you can, and the ones whose deps aren't published yet sit at `U` (unresolvable) and auto-rebuild the moment the dep appears. A transient `U` right after committing a dep is normal (publish lag), not an error — only worry if it persists after the dep shows `.` succeeded.
+- **Monitor with `scripts/cone-status.sh <prj> [repo] [arch]`** (a `code → package` table + a loopable exit code: `0` all green, `1` in flight/dirty, `2` settled failure — wraps the `osc results` parsing and the stale-failure guard). Or read `osc results <prj>` directly (one column per package, dependency-sorted) — for the full status-code vocabulary see the canonical table in `references/submit-watch.md` ("`osc results` status vocabulary"); the short decode is in step 3 above.
+- **Read a remote build log with `osc rbl <prj> <pkg> openSUSE_Factory x86_64`** (remote-buildlog; `osc buildlog` is the same for the current dir). Grep it for `error|fail|nothing provides|unpackaged|Unknown build hook`. A `B`-broken package has **no** log (`HTTP 404 … has no logfile`) — check `osc api /build/<prj>/<repo>/<arch>/<pkg>/_status` and `osc ls <prj> <pkg>` instead.
+- Keep `osc st` for *local* working-copy state (uncommitted `A`/`M` files). Be aggressive about firing off independent `osc rbl` / `osc results` / fetches in parallel rather than serially.
+- Only fall back to a local `osc build` when you need to iterate fast on one stubborn package in isolation; otherwise let the project build.
+- **Read the `osc rbl` log of the *successful* packages too, not only the failed ones** — in a server-built cone a `.` (succeeded) only means rpmlint badness stayed under the 999 threshold and the build completed; it does not mean the log is clean. Grep each green package's log for the `RPMLINT report` section and any `W:`/`E:` lines, for sub-threshold rpmlint findings worth fixing (e.g. `devel-file-in-non-devel-package`, `non-executable-script`, weak-dependency suggestions), for compiler warnings that signal real bugs (`-Wmaybe-uninitialized`, `-Wimplicit-function-declaration`), and for **missed/incorrectly-auto-satisfied dependencies** (a runtime import that resolved only because a build dep happened to pull it in transitively). This is the server-side analogue of the "always read rpmlint after every build" hard rule — when you never ran the build locally, the remote log is the only place those problems show, so review it for every package in the cone before submitting. Filter the environmental noise this build farm always emits (the `polkit-default-privs … scriptlet failed`, `Disabling truststore because of missing certificates`, and `cycle: …` lines are not your package's problem).
+- **Tightly inter-pinned clusters (e.g. the langchain/langgraph 1.x stack) need a coherent version *matrix*, chosen up front.** Each member pins the others to narrow ranges (langgraph 1.2.6 → langgraph-sdk `>=0.4.2,<0.5` + langchain-core `>=1.4.7` + langgraph-checkpoint `>=4.1.0,<5` + langgraph-prebuilt `>=1.1.0,<1.2`). Packaging a leaf at bare "latest" can pick a version the *target consumer* won't accept — instead resolve to ONE consumer version (the newest that satisfies your top-level need) and read its `requires_dist` to derive every member's exact version *before* building, or you'll rebuild leaves when constraints clash. (Real case: skillspector's cone — langgraph-sdk first built 0.3.15 for langgraph 1.0.10, then rebuilt to 0.4.2 once the matrix settled on langgraph 1.2.6.)
+- **If you do iterate with local `osc build` on several cone packages at once, give each its own `--root=/var/tmp/build-root/<uniq>`** — concurrent local builds share the default buildroot and corrupt each other mid-init (`.init_b_cache` rpms vanishing). The server-side home:-project parallel build above sidesteps this entirely; the per-`--root` trick is only for the occasional local iteration.
+- When the whole cone is green, SR each package to `devel:languages:python` (leaves first so deps exist in the target). If the user wants to maintain them, add the user to each package `_meta` (`<person userid="…" role="maintainer"/>`) **and** say so in the SR message.
 
 ## Updating a package that uses a source service (`_service` / tar_scm)
 
@@ -257,7 +138,7 @@ For an **autotools** package, whether you still need `autoconf`/`automake`/`libt
 When a build fails locally, check this list before debugging from scratch.
 
 - **HARD RULE: prove a build/flag fix is actually *effective* before claiming or submitting it — a clean build does not mean your change did anything.** A compiler flag or `-D` you add can be silently overridden, leaving a byte-identical binary; you then ship a no-op (and, worse, a `.changes` entry that lies about fixing a bug). Two traps and their checks:
-  - **Last `-D`/flag wins.** If the upstream build already sets the macro you're trying to set, *order on the command line decides*, and the build's own flags usually come **after** your `XCFLAGS`/`%optflags`. Grep the real compile line in the build log (`sudo grep -- '-Dyour_macro' …/.build.log | grep -oE '-Dyour_macro=[^ ]*'`) — if your value isn't the last occurrence, it's dead. (Real case: **mupdf** — added `-DLCMS2MT_PREFIX=mupdf_lcms_` to `XCFLAGS` to namespace the bundled lcms2, but `LCMS2_CFLAGS` appends `-DLCMS2MT_PREFIX=lcms2mt_` later on *every* line, so the prefix was unchanged.)
+  - **Last `-D`/flag wins.** If the upstream build already sets the macro you're trying to set, *order on the command line decides*, and the build's own flags usually come **after** your `XCFLAGS`/`%optflags`. Grep the real compile line in the build log (`grep -- '-Dyour_macro' …/.build.log | grep -oE '-Dyour_macro=[^ ]*'`) — if your value isn't the last occurrence, it's dead. (Real case: **mupdf** — added `-DLCMS2MT_PREFIX=mupdf_lcms_` to `XCFLAGS` to namespace the bundled lcms2, but `LCMS2_CFLAGS` appends `-DLCMS2MT_PREFIX=lcms2mt_` later on *every* line, so the prefix was unchanged.)
   - **Diff the produced binary against the *current distro* binary.** Fetch the published RPM (`osc api /build/<prj>/<repo>/<arch>/<pkg>/<file>.rpm > x.rpm`) and compare what actually matters — exported/undefined symbols (`nm -D`), `DT_NEEDED` (`objdump -p`), file list. If your rebuild is equivalent, the change is inert and the real cause is elsewhere. (Real case: mupdf again — the rebuilt `libmupdf.so` was identical to Factory's (437 `lcms2mt_` symbols, no undefined `cms*`, no `liblcms2` in NEEDED); the actual zathura-crash root cause — a *static*-link symbol interposition against system lcms2 — had already been fixed by a prior static→shared conversion, so the bug needed **no mupdf change at all**, only verification and a bug close.)
 - **HARD RULE: extract the upstream changes FIRST — it is the opening step of a version bump, not a closing one.** Immediately after confirming the new version (and *before* editing the spec), pull the changelog / release notes / commit range (`gh api repos/<o>/<r>/compare/<oldtag>...<newtag> --jq '.commits[].commit.message'`, the release body, `NEWS`/`ChangeLog`/`CHANGES` in the tarball, or a diff of the shipped files for data packages). Do this once, up front, and let it drive the whole update: the same extracted change-set is what you (a) act on as the spec-affecting checklist below, and (b) curate into the `.changes` entry at the end. Figuring out the changes only at `.changes`-writing time means you've already done the build-fail-fix-rebuild loop blind and likely missed a workaround you could have dropped or a dep you could have anticipated. Front-loading turns "discover problems one failed build at a time" into "know what's coming."
 - **HARD RULE: read the upstream changelog/release notes as a checklist of *spec-affecting* changes — on every version bump, ask "does anything here change how our spec should look?"** The changelog is not just `.changes` fodder; it routinely announces things that should drive a spec edit, and a workaround left in place after upstream fixed the underlying problem is dead weight. Scan each release's notes for items in these categories and act on them:
@@ -326,3 +207,11 @@ When the package tracks a **dead fork** and the CVE/bug fix only exists in a *di
 - **Target the newest build, but expect a portability gap the distro patches don't cover** — they're written for an *older* version, so newer code has un-guarded platform-isms. (xar 503's new `xar_fdopen_digest_verify()` used macOS-only `F_GETPATH`; fix on Linux with a `/proc/self/fd/<fd>` `readlink` fallback under `#ifdef F_GETPATH … #else …`.) Find these by building and reading the first hard `: error:` (filter out the warnings).
 - **Confirm the lib didn't change ABI:** check the soname major (`LIB_REV`/`*.so.N`) so the `lib<name>N` subpackage name and `baselibs.conf` stay correct; and re-verify the **license** and the `%doc`/`%license` file *names* (a different lineage may drop `NEWS`, rename `COPYING`, etc.).
 - **Functionally round-trip the result** (e.g. create+extract an archive) — a lineage switch is exactly the kind of change where "it built" isn't enough.
+
+## New package from scratch
+
+**When creating a BRAND-NEW package, survey other distros for the *packaging itself* before writing a line of spec — HARD RULE.** This is distinct from the fix-survey hard rule (Core directive item 8, which surveys for *fixes* when touching an existing package): here you are surveying for the *packaging structure* of something Factory does not have yet. Before authoring the spec, look at how Fedora, Debian, Gentoo, Arch, Alpine, openEuler, Void, NixOS, FreeBSD ports, OpenMandriva and Mageia already package it (`scripts/distro-survey.sh <pkg>` covers all of them in one call, plus read their actual `.spec`/`debian/rules`/`PKGBUILD`/ebuild/Void-template/Nix-derivation), **and** check for an existing `home:` project copy on OBS (`osc search --package <pkg>`).
+
+Harvest from them: the **shared-library soname / subpackage split**, the `-devel`/`-tools`/`-doc` partitioning, build-system invocation and **build options** (`-D…`/`--enable-…`), `%check`/test wiring, any **required patches**, and the correct **SPDX license**.
+
+Prefer basing the new package on the best existing reference — `osc copypac` from a good `home:` copy (see the copypac note), or port a distro's spec — then reconcile it against the cross-distro consensus, rather than writing from scratch and missing a subpackage split or a needed patch everyone else already carries. Treat a single distro's choices as one data point; where distros **disagree** (e.g. one ships only a static lib, another a versioned `.so`), follow openSUSE's Shared Library Policy and the majority of the distros that ship a proper shared lib. (Real case: cmark-gfm — new to Factory for mupdf's Markdown support; surveyed Fedora/Debian/Arch/etc. to settle the `libcmark-gfm`/`libcmark-gfm-extensions` soname subpackages + `-devel` split before packaging it in `Publishing`.)
