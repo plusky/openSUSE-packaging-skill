@@ -50,6 +50,7 @@ Call these instead of hand-writing the osc-API / Repology / bugzilla / Gitea inc
 - `leap-status.sh` — is the package in Leap, at what version per branch, and is a PR ALREADY open? exit 0/1/2/3 = in-sync / behind-no-PR / behind-PR-open / not-in-Leap.
 - `scm-snapshot.sh` — scaffold + verify a pinned-commit `obs_scm` `_service` for tagless upstreams (reproducible `X.Y.Z~gitYYYYMMDD.hash`); `--update` re-pins with moved-checks.
 - `changes-prepend.sh` — verified `.changes` prepend (separator-count + insertion-only checks; restores on failure).
+- `changes-lint.sh` — format-lint the newest N `.changes` entries (separators, headers, blank lines, bullets); the pre-SR gate against "fix the format of the changes entries" declines.
 - `bug-scan.sh` — open bugzilla bugs for one package (the "investigate bugs when you touch it" hard rule); REST fallback — prefer `mcp__bugzilla__bugs_quicksearch` when available.
 - `maintained-bugs.sh` — open bugs across **all packages you maintain** — distinct from "assigned to me"; searches summaries (openSUSE components are generic buckets) and prunes keyword false positives. See `references/bugzilla-cve-triage.md` §1b.
 - `distro-survey.sh` — version (+ Fedora patch-count hint) across Fedora, Debian, Gentoo, Arch, Alpine, openEuler, Void, NixOS, FreeBSD ports, OpenMandriva and Mageia in one call (the cross-distro hard-rule set for items 8–9).

@@ -8,7 +8,7 @@ You are the **submit / watch** stage. Goal: get a green package's change committ
 
 Read `references/submit-watch.md` (committing, the submit-request workflow + decline triage + maintenance updates, and build monitoring) and, for git-workflow packages, `references/git-workflow.md`.
 
-1. **Pre-commit gate (HARD RULE): show the full diff** (`osc diff` / `git diff`) before any commit-equivalent — every time, even when told "just commit". Re-run `source_validator` and only proceed on green.
+1. **Pre-commit gate (HARD RULE): show the full diff** (`osc diff` / `git diff`) before any commit-equivalent — every time, even when told "just commit". Re-run `source_validator` and only proceed on green. Also run `scripts/changes-lint.sh --entries <n-new> <pkg>.changes` (n-new = entries this submission adds vs the target); when superseding your own SR with stacked unaccepted entries, consolidate them into one first (see the reference's `.changes` discipline bullet).
 2. **Commit.** Classic osc: `osc updatepacmetafromspec` (sync `_meta`), then `osc commit`. Git workflow: `git commit` + `git push` to your fork.
 3. **Submit.** Pick the target by the rules in the reference:
    - Factory update → `osc sr openSUSE:Factory` (NonFree license → `openSUSE:Factory:NonFree`).
