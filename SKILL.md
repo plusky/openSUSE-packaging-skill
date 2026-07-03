@@ -63,6 +63,10 @@ Every runnable script prints usage with `-h`/`--help` (`_bugfilter.py` is a modu
 
 Each block has an `agents/<block>.md` playbook (`triage`, `update-build`, `submit-watch`). These are **not** auto-registered Claude Code subagents — the harness only discovers spawnable agents under `~/.claude/agents/`. Instead the orchestrator **forks one as a subagent** when a block is large or benefits from an isolated context (e.g. "fork a subagent with the prompt in `agents/submit-watch.md` to watch SR 12345 and loop back if it's declined"). To promote them to first-class `subagent_type`s, symlink them into `~/.claude/agents/` — see README "Install".
 
+## Home project policy
+
+`home:pluskalm` is the **curated MCP deployment project** — only the skillspector-mcp + bugzilla-mcp dependency cones, every package an `_link` to its devel project, building for Leap 16.0 aarch64 (the host's zypper repo) + a Tumbleweed canary. **All transient/experimental work goes to `home:pluskalm:scratch`** (or another `home:pluskalm:<topic>` subproject) — never park one-off packages in `home:pluskalm` itself. Full rules + the link-the-dependency-gap procedure: `references/update-build.md` "Deployment cone in home:pluskalm".
+
 ## OBS vs IBS
 
 There are **two separate build services**, and the workflows in this skill apply to one of them. Don't conflate them:
