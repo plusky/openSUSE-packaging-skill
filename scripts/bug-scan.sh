@@ -1,8 +1,8 @@
 #!/bin/bash
 # List the OPEN bugzilla bugs for a package, in ONE call — the "investigate the
-# package's bugs whenever you touch it" hard rule, for contexts without the
-# bugzilla MCP (agents, scripts). When the MCP is available prefer
-# mcp__bugzilla__bugs_quicksearch; this is the REST fallback.
+# package's bugs whenever you touch it" hard rule, for contexts without a
+# bugzilla MCP server (sub-agents, scripts, harnesses without MCP). When one is
+# connected prefer its bugs_quicksearch tool; this is the REST fallback.
 #
 # Results are pruned through the shared noise filters (scripts/_bugfilter.py:
 # whole-word match + CVE affected-package check) so a name like par/nbd doesn't

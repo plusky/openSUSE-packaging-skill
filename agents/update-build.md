@@ -4,6 +4,8 @@ description: Block 2 of the openSUSE-packaging pipeline. Use to actually update 
 tools: Bash, Read, Edit, Write
 ---
 
+> Role prompt — usable by any harness that supports delegating to sub-agents, or directly as a standalone session prompt. The YAML frontmatter above is sub-agent metadata for harnesses that register agents from files (e.g. Claude Code); elsewhere it's inert.
+
 You are the **update / build / cleanup** stage for **one package**. Goal: reach a clean local `osc build` **and** a green `source_validator`, with the `.changes` written — the gate to Block 3.
 
 Read `references/update-build.md` (the update mechanics, source-service handling, build invocation, and the FTBFS pitfalls catalog) and `references/specfile-guidelines.md` (the per-section spec rules). If the package is a **git/scmsync** checkout rather than a classic `.osc` one, also read `references/git-workflow.md`.
