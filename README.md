@@ -4,9 +4,9 @@ An agent skill for authoring, updating, building, reviewing, and submitting open
 RPM packages via OBS and the Git packaging workflow (src.opensuse.org / Gitea).
 
 It works with **any coding agent that can run shell commands** — the skill is plain markdown
-plus POSIX-shell/Python helper scripts. It ships with native packaging for Claude Code
-(`SKILL.md` frontmatter + delegation playbooks), and the same files read as ordinary
-instruction documents from grok CLI, opencode, codex, gemini-cli, or any other harness.
+plus POSIX-shell/Python helper scripts. Harnesses with native skill/sub-agent support consume
+the `SKILL.md` frontmatter and delegation playbooks directly; everywhere else the same files
+read as ordinary instruction documents.
 
 ## Layout
 
@@ -20,12 +20,10 @@ agents/                      delegation playbooks (role prompts) for the three b
 ```
 
 The YAML frontmatter at the top of `SKILL.md` and `agents/*.md` is metadata for harnesses
-with native skill/sub-agent support (e.g. Claude Code); everywhere else it is harmless
+with native skill/sub-agent support; everywhere else it is harmless
 plain text — no other file depends on it.
 
 ## Install
-
-### Any agent (grok CLI, opencode, codex, gemini-cli, …)
 
 Clone the repo anywhere and point your agent at `SKILL.md` as context — reference it from
 your harness's rules/context file (`AGENTS.md`, `.rules`, a system prompt, an
@@ -37,13 +35,6 @@ The `agents/*.md` playbooks are role prompts: if your harness supports delegatin
 sub-agents/sub-tasks, use one as the sub-agent's instructions; otherwise run the playbook
 inline in the main session or paste it as a standalone session prompt.
 
-### Claude Code
-
-Copy (or symlink) the repo contents to `~/.claude/skills/openSUSE-packaging/`. To make the
-three block agents spawnable as `subagent_type`s, symlink them into `~/.claude/agents/`:
-
-```sh
-for a in triage:osc-triage update-build:osc-update-build submit-watch:osc-submit-watch; do
-  ln -sfn "$PWD/agents/${a%%:*}.md" ~/.claude/agents/"${a##*:}.md"
-done
-```
+Harnesses with native skill/sub-agent support: place (or symlink) the repo where the harness
+discovers skills, and register the `agents/*.md` playbooks wherever it discovers agents so the
+three blocks become first-class delegatable agents.

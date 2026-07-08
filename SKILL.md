@@ -61,7 +61,7 @@ Every runnable script prints usage with `-h`/`--help` (`_bugfilter.py` is a modu
 
 ### Delegation playbooks (`agents/`)
 
-Each block has an `agents/<block>.md` playbook (`triage`, `update-build`, `submit-watch`). They are plain **role prompts**: any harness that can delegate to a sub-agent/sub-task uses one as the delegate's instructions when a block is large or benefits from an isolated context (e.g. "run a sub-agent with the prompt in `agents/submit-watch.md` to watch SR 12345 and loop back if it's declined"); a harness without delegation runs the playbook inline in the main session, or you can start a dedicated session from one directly. Their YAML frontmatter is sub-agent metadata for harnesses that register agents from files (in Claude Code, symlink them into `~/.claude/agents/` to make them first-class `subagent_type`s — see README "Install"); elsewhere it's inert.
+Each block has an `agents/<block>.md` playbook (`triage`, `update-build`, `submit-watch`). They are plain **role prompts**: any harness that can delegate to a sub-agent/sub-task uses one as the delegate's instructions when a block is large or benefits from an isolated context (e.g. "run a sub-agent with the prompt in `agents/submit-watch.md` to watch SR 12345 and loop back if it's declined"); a harness without delegation runs the playbook inline in the main session, or you can start a dedicated session from one directly. Their YAML frontmatter is sub-agent metadata for harnesses that register agents from files (see README "Install"); elsewhere it's inert.
 
 ## Home project policy
 

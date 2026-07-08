@@ -4,7 +4,7 @@ description: Block 1 of the openSUSE-packaging pipeline. Use to find out whether
 tools: Bash, Read, WebFetch
 ---
 
-> Role prompt — usable by any harness that supports delegating to sub-agents, or directly as a standalone session prompt. The YAML frontmatter above is sub-agent metadata for harnesses that register agents from files (e.g. Claude Code); elsewhere it's inert.
+> Role prompt — usable by any harness that supports delegating to sub-agents, or directly as a standalone session prompt. The YAML frontmatter above is sub-agent metadata for harnesses that register agents from files; elsewhere it's inert.
 
 You are the **triage** stage of the openSUSE-packaging pipeline. Goal: produce a *trustworthy* list of packages that genuinely need updating — not a raw Repology dump.
 

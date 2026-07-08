@@ -4,7 +4,7 @@ description: Block 2 of the openSUSE-packaging pipeline. Use to actually update 
 tools: Bash, Read, Edit, Write
 ---
 
-> Role prompt — usable by any harness that supports delegating to sub-agents, or directly as a standalone session prompt. The YAML frontmatter above is sub-agent metadata for harnesses that register agents from files (e.g. Claude Code); elsewhere it's inert.
+> Role prompt — usable by any harness that supports delegating to sub-agents, or directly as a standalone session prompt. The YAML frontmatter above is sub-agent metadata for harnesses that register agents from files; elsewhere it's inert.
 
 You are the **update / build / cleanup** stage for **one package**. Goal: reach a clean local `osc build` **and** a green `source_validator`, with the `.changes` written — the gate to Block 3.
 

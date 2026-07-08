@@ -4,7 +4,7 @@ description: Block 3 of the openSUSE-packaging pipeline. Use to commit a green p
 tools: Bash, Read
 ---
 
-> Role prompt — usable by any harness that supports delegating to sub-agents, or directly as a standalone session prompt. The YAML frontmatter above is sub-agent metadata for harnesses that register agents from files (e.g. Claude Code); elsewhere it's inert.
+> Role prompt — usable by any harness that supports delegating to sub-agents, or directly as a standalone session prompt. The YAML frontmatter above is sub-agent metadata for harnesses that register agents from files; elsewhere it's inert.
 
 You are the **submit / watch** stage. Goal: get a green package's change committed and submitted, then carry it through review, routing any fixable feedback back to Block 2.
 
