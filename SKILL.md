@@ -39,6 +39,7 @@ Call these instead of hand-writing the osc-API / Repology / bugzilla / Gitea inc
 - `my-packages.sh` — packages where you are an **explicit package-level** maintainer (not project-inherited).
 - `my-requests.sh` — your submit requests as a plain list (now a thin wrapper over `sr-status.py --brief --no-prs`, OBS side only).
 - `sr-status.py` — **the Block-3 watch view**: OBS SRs *and* src.opensuse.org PRs in one table (state, review chain, human comments), declines/closed-unmerged first.
+- `watch-submissions.sh` — the **cron/scheduled-prompt delta watcher**: diffs your active SRs + open PRs against a saved baseline and prints only what changed since the last run (`NOCHANGE` → stay silent; `NEW`/staging-move/`RESOLVE` lines → the caller fetches final states). `sr-status.py` answers "what's the status?", this answers "what changed?" without spamming on every firing.
 - `outdated.py` — Repology "outdated in openSUSE Tumbleweed" ∩ your package set, cross-checked against live Factory.
 - `upstream-probe.py` — per-candidate date-based latest-upstream verdict (CURRENT / UPDATE-CANDIDATE / SUSPECT-renumbering); the Repology-false-positive deep check.
 - `preflight.sh` — Block-2 step 0: is the update already done or in flight? exit 0/3/4 = proceed/stop/forward.

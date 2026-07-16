@@ -128,7 +128,7 @@ Before `osc sr <target>`, confirm the target actually has the package — Factor
 
 ### Querying existing requests
 
-For the common cases use `scripts/sr-status.py` (state + review chain + comments table; `--brief` for a plain list; includes src.opensuse.org PRs) / `scripts/my-requests.sh` (thin wrapper for the brief view) — the commands below are what they wrap, for custom queries.
+For the common cases use `scripts/sr-status.py` (state + review chain + comments table; `--brief` for a plain list with staging assignments; includes src.opensuse.org PRs) / `scripts/my-requests.sh` (thin wrapper for the brief view). For a **recurring/scheduled watch** use `scripts/watch-submissions.sh` — it diffs the active SR + open PR set against a saved baseline and prints only the delta (`NOCHANGE` on most firings → stay silent; `RESOLVE SR/PR` lines mean the item left the watched set and the caller fetches the final accepted/declined/merged state). The commands below are what they wrap, for custom queries.
 
 | Command | What it shows |
 |---|---|
