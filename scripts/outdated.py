@@ -27,7 +27,7 @@ Usage: my-packages.sh --... | cut -f2 | outdated.py
        outdated.py --names /tmp/names.txt
        outdated.py --names /tmp/names.txt --no-factory-check   # raw Repology
 """
-import sys, json, time, urllib.request, argparse, subprocess, re
+import sys, json, time, urllib.request, urllib.error, argparse, subprocess, re
 from concurrent.futures import ThreadPoolExecutor
 
 ap = argparse.ArgumentParser()
@@ -45,9 +45,25 @@ mine = set(l.strip() for l in src if l.strip()) if src else None
 
 def fetch(bound):
     url = f"https://repology.org/api/v1/projects/{bound}?inrepo={args.repo}&outdated=1"
-    req = urllib.request.Request(url, headers={"User-Agent": args.ua})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read().decode())
+    # Repology rate-limits aggressively (HTTP 429) on the paginated sweep;
+    # honor Retry-After / back off instead of dying mid-pagination.
+    for attempt in range(4):
+        req = urllib.request.Request(url, headers={"User-Agent": args.ua})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 502, 503, 504) and attempt < 3:
+                try:
+                    delay = int(e.headers.get("Retry-After") or 0)
+                except ValueError:
+                    delay = 0
+                delay = delay or 5 * 3 ** attempt
+                sys.stderr.write(f"WARNING: HTTP {e.code} from Repology at "
+                                 f"'{bound or '(start)'}', retrying in {delay}s\n")
+                time.sleep(delay)
+                continue
+            raise
 
 results, bound = {}, ""
 while True:
