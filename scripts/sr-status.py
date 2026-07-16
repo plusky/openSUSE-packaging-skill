@@ -226,13 +226,25 @@ def main():
                 tgt = act.find("target") if act is not None else None
                 src = act.find("source") if act is not None else None
                 sname = st.get("name") if st is not None else "?"
+                # staging assignment is free here — the collection XML already
+                # carries the reviews, so no per-item API call is needed
+                stg = ""
+                for rv in r.findall("review"):
+                    if rv.get("state") == "new":
+                        by = rv.get("by_project") or ""
+                        if "Staging" in by:
+                            parts = by.split(":")
+                            # ...Staging:adi:40 -> adi:40, ...Staging:G -> G
+                            stg = (parts[-1] if parts[-2] == "Staging"
+                                   else ":".join(parts[-2:]))
                 rows.append({"kind": "SR", "id": r.get("id"),
                              "num": int(r.get("id", 0)),
                              "pkg": tgt.get("package") if tgt is not None else "?",
                              "target": (tgt.get("project") if tgt is not None else "?"),
                              "src": (f"{src.get('project')}/{src.get('package')}"
                                      if src is not None else "?"),
-                             "state": sname, "chain": "—", "comment": "—",
+                             "state": sname, "staging": stg,
+                             "chain": "—", "comment": "—",
                              "bad": sname == "declined"})
         else:
             ids = [r.get("id") for r in reqs]
@@ -275,7 +287,8 @@ def main():
         for r in rows:
             src = f"  {r.get('src','')} ->" if r.get("src") else " "
             print(f"  {r['kind']} {r['id']}  [{r['state']:9}] {src} {r['target']}"
-                  + (f"/{r['pkg']}" if r["kind"] == "SR" else ""))
+                  + (f"/{r['pkg']}" if r["kind"] == "SR" else "")
+                  + (f"  @{r['staging']}" if r.get("staging") else ""))
         return
     if a.format == "blocks":
         for r in rows:
