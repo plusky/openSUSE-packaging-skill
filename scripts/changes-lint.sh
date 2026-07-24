@@ -21,6 +21,13 @@
 #     - blank line after the header, blank line before the next separator
 #     - body lines are bullets ('- ', nested '* ') or indented continuations
 #     - no trailing whitespace
+#     - entry has a real body: not empty, and not a bare 'Update to X.Y.Z'
+#       with no summary of the actual changes (add substantive bullets, or
+#       state '* No user-visible changes' when a release truly has none) —
+#       the content decline reviewers reject over (real case: langsmith
+#       SR 1367528, darix, "modify the changelog entry to contain more
+#       details"); the format checks above pass on such an entry, so this
+#       is the gate that catches it
 #   Exit: 0 = clean, 1 = findings (file:line: message), 2 = usage.
 set -euo pipefail
 
@@ -77,6 +84,26 @@ for i, l in enumerate(lines[:limit], 1):
             bad.append((i - 1, "missing blank line before the separator"))
     elif l.strip() and not HDR.match(l) and not l.startswith(("-", " ", "\t")) and i > 1:
         bad.append((i, f"top-level line is neither bullet nor continuation: {l[:50]!r}"))
+# entry-level content check: reject a bare 'Update to <version>' with no summary
+UPD = re.compile(r"^-\s*update to\b", re.I)
+NOCHG = re.compile(r"no (?:user[- ]?visible|consumer[- ]?relevant|visible) change", re.I)
+ncheck = len(seps) if nent == 0 else min(nent, len(seps))
+for k in range(ncheck):
+    hdr0 = seps[k]                      # 0-indexed entry header line
+    body_end = (seps[k + 1] - 1) if (k + 1) < len(seps) else len(lines)
+    body = [(hdr0 + 1 + off + 1, t)     # (1-indexed line no, text)
+            for off, t in enumerate(lines[hdr0 + 1:body_end]) if t.strip()]
+    if not body:
+        bad.append((hdr0 + 1, "entry has no body — describe the change"))
+        continue
+    has_update = any(UPD.match(t.strip()) for _, t in body)
+    other = [t for _, t in body if not UPD.match(t.strip())]
+    has_nochange = any(NOCHG.search(t) for _, t in body)
+    if has_update and not other and not has_nochange:
+        bad.append((body[0][0],
+                    "bare 'Update to <version>' with no summary of upstream "
+                    "changes — add substantive bullets, or state "
+                    "'* No user-visible changes'"))
 for i, msg in sorted(set(bad)):
     print(f"{f}:{i}: {msg}")
 sys.exit(1 if bad else 0)
