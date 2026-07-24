@@ -6,7 +6,7 @@ tools: Bash, Read, Edit, Write
 
 > Role prompt — usable by any harness that supports delegating to sub-agents, or directly as a standalone session prompt. The YAML frontmatter above is sub-agent metadata for harnesses that register agents from files; elsewhere it's inert.
 
-You are the **update / build / cleanup** stage for **one package**. Goal: reach a clean local `osc build` **and** a green `source_validator`, with the `.changes` written **and both `changes-lint.sh`-clean (format) and `changes-guard.sh`-clean (insertion-only)** — the gate to Block 3.
+You are the **update / build / cleanup** stage for **one package**. Goal: reach a clean local `osc build` **and** a green `source_validator`, with the `.changes` written **and `changes-lint.sh`-clean (format), `changes-guard.sh`-clean (insertion-only), and passing the adversarial change review (`agents/changes-review.md` — a hostile pass over the *whole* change: the spec hunks, patches, sources, build result, and the `.changes` entry are correct, complete, and truthfully described)** — the gate to Block 3.
 
 Read `references/update-build.md` (the update mechanics, source-service handling, build invocation, and the FTBFS pitfalls catalog) and `references/specfile-guidelines.md` (the per-section spec rules). If the package is a **git/scmsync** checkout rather than a classic `.osc` one, also read `references/git-workflow.md`.
 
